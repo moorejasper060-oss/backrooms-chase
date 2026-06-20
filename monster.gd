@@ -20,6 +20,9 @@ enum State { WANDER, CHASE }
 @onready var head: Node3D = $Head
 
 const DEMON_PATH := "res://models/demon.glb"
+const GAUNT_RATIO := 0.48        # horizontal scale vs vertical — keeps it tall and thin
+const CEILING_CLEARANCE := 0.25  # gap kept below the ceiling so it can never clip through
+const EYE_COLOR := Color(1.0, 0.05, 0.02)
 
 var active := true
 var world: Node          # the World node (maze graph + helpers)
@@ -255,17 +258,90 @@ func _build_body() -> void:
 		return
 	_model = doc.generate_scene(state)
 	add_child(_model)
-	_model.scale = Vector3(0.78, 1.6, 0.78)   # stretch tall + a little gaunt
+	_model.scale = Vector3.ONE
 	_model.rotation.y = 0.0                      # model already faces our -Z forward
 
+	# Fit the figure under the ceiling so it can never poke through the roof.
+	# Measure the model's natural size, then scale so it stands `_target_height()`
+	# tall — close enough to scrape the ceiling to loom, but always inside it.
+	var box := _model_aabb(_model)
+	var native_h: float = maxf(box.size.y, 0.001)
+	var s_y := _target_height() / native_h
+	var s_xz := s_y * GAUNT_RATIO                 # stays narrow -> tall and gaunt
+	_model.scale = Vector3(s_xz, s_y, s_xz)
+	# Plant the feet on the floor (the model's origin may sit above its lowest point).
+	_model.position.y = -box.position.y * s_y
+
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.16, 0.05, 0.05)   # dark dried-blood, not cartoon red
-	mat.roughness = 0.9
+	mat.albedo_color = Color(0.10, 0.03, 0.03)   # near-black so the eyes burn against a silhouette
+	mat.roughness = 0.95
 	_recolor(_model, mat)
+
+	_add_eyes()
 
 	_anim = _find_anim_node(_model)
 	if _anim:
 		_anim.play("CharacterArmature|Idle")
+
+## Tallest the monster may stand: just under the ceiling so it looms but never
+## clips through the roof. Falls back to 2.75 if the world has no wall_height.
+func _target_height() -> float:
+	var ceiling := 3.0
+	if world and "wall_height" in world:
+		ceiling = world.wall_height
+	return maxf(1.6, ceiling - CEILING_CLEARANCE)
+
+## Combined axis-aligned bounds of every mesh in the model, in the model's own
+## local space (called while the model is at scale 1, so this is its natural size).
+func _model_aabb(root: Node3D) -> AABB:
+	var inv := root.global_transform.affine_inverse()
+	var acc := AABB()
+	var started := false
+	for mi in _collect_meshes(root):
+		if mi.mesh == null:
+			continue
+		var b: AABB = (inv * mi.global_transform) * mi.mesh.get_aabb()
+		if started:
+			acc = acc.merge(b)
+		else:
+			acc = b
+			started = true
+	return acc
+
+func _collect_meshes(n: Node) -> Array:
+	var out := []
+	if n is MeshInstance3D:
+		out.append(n)
+	for c in n.get_children():
+		out.append_array(_collect_meshes(c))
+	return out
+
+## Two unshaded, emissive eyes plus a faint red glow at the head. The eyes burn
+## through the dark and bloom (the world has glow enabled), so a silhouette with
+## two red points reads as a monster long before you can make out its body.
+func _add_eyes() -> void:
+	var h := _target_height()
+	var eye_mat := StandardMaterial3D.new()
+	eye_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	eye_mat.albedo_color = EYE_COLOR
+	eye_mat.emission_enabled = true
+	eye_mat.emission = EYE_COLOR
+	eye_mat.emission_energy_multiplier = 8.0
+
+	var eye_y := h * 0.86      # head height
+	var eye_z := -0.2          # just in front of the face (monster faces -Z)
+	var eye_dx := 0.09         # half the gap between the eyes
+	add_child(_sphere(0.05, Vector3(-eye_dx, eye_y, eye_z), eye_mat))
+	add_child(_sphere(0.05, Vector3(eye_dx, eye_y, eye_z), eye_mat))
+
+	# Faint red glow so the figure emerges from the dark as it closes in.
+	var glow := OmniLight3D.new()
+	glow.position = Vector3(0.0, eye_y, eye_z)
+	glow.light_color = EYE_COLOR
+	glow.light_energy = 1.2
+	glow.omni_range = 3.5
+	glow.shadow_enabled = false
+	add_child(glow)
 
 func _recolor(n: Node, mat: Material) -> void:
 	if n is MeshInstance3D and (n as MeshInstance3D).mesh:
