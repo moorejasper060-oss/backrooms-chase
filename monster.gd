@@ -19,6 +19,8 @@ enum State { WANDER, CHASE }
 
 @onready var head: Node3D = $Head
 
+const DEMON_PATH := "res://models/demon.glb"
+
 var active := true
 var world: Node          # the World node (maze graph + helpers)
 var player: Node3D
@@ -41,6 +43,8 @@ var _arm_r: Node3D
 var _leg_l: Node3D
 var _leg_r: Node3D
 var _anim_t := 0.0
+var _model: Node3D
+var _anim: AnimationPlayer
 
 # Anti-stuck
 var _last_pos := Vector3.ZERO
@@ -95,7 +99,7 @@ func _physics_process(delta: float) -> void:
 	_detect_stuck(delta)
 	_follow_path()
 	move_and_slide()
-	_animate(delta)
+	_update_anim()
 	_check_catch()
 
 ## If it's pressed against a wall making no progress, slide it along the wall
@@ -165,6 +169,11 @@ func _recompute_path() -> void:
 
 func is_chasing() -> bool:
 	return _state == State.CHASE
+
+## Play the attack clip (used for the catch jumpscare).
+func play_attack() -> void:
+	if _anim:
+		_anim.play("CharacterArmature|Punch")
 
 ## Endgame rage: once the exit opens it always knows where you are and is a
 ## touch faster — the final dash has to be earned.
@@ -236,67 +245,43 @@ func _can_see_player() -> bool:
 		return true
 	return (hit.collider as Node).is_in_group("player")
 
-## Builds a gaunt, pale, hunched humanoid from rounded primitives, with pivots
-## for the limbs and head so we can animate a lurching walk and head-tracking.
+## Loads the rigged demon model (CC0, Quaternius) and restyles it dark + tall/
+## gaunt to kill the cartoon cuteness. Its Walk/Run/Idle clips are driven by
+## _update_anim() each frame.
 func _build_body() -> void:
-	var skin := StandardMaterial3D.new()
-	skin.albedo_color = Color(0.62, 0.58, 0.53)   # pale, sickly flesh
-	skin.roughness = 0.85
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	if doc.append_from_file(DEMON_PATH, state) != OK:
+		return
+	_model = doc.generate_scene(state)
+	add_child(_model)
+	_model.scale = Vector3(0.78, 1.6, 0.78)   # stretch tall + a little gaunt
+	_model.rotation.y = 0.0                      # model already faces our -Z forward
 
-	var dark := StandardMaterial3D.new()
-	dark.albedo_color = Color(0.02, 0.02, 0.02)    # sunken sockets / mouth
-	dark.roughness = 1.0
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.16, 0.05, 0.05)   # dark dried-blood, not cartoon red
+	mat.roughness = 0.9
+	_recolor(_model, mat)
 
-	var eye_mat := StandardMaterial3D.new()
-	eye_mat.albedo_color = Color(0.1, 0.0, 0.0)
-	eye_mat.emission_enabled = true
-	eye_mat.emission = Color(1.0, 0.05, 0.05)
-	eye_mat.emission_energy_multiplier = 2.2
+	_anim = _find_anim_node(_model)
+	if _anim:
+		_anim.play("CharacterArmature|Idle")
 
-	_mesh_root = Node3D.new()
-	add_child(_mesh_root)
+func _recolor(n: Node, mat: Material) -> void:
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh:
+		for i in (n as MeshInstance3D).mesh.get_surface_count():
+			(n as MeshInstance3D).set_surface_override_material(i, mat)
+	for c in n.get_children():
+		_recolor(c, mat)
 
-	# Pelvis, hunched torso, hunched shoulders, thin neck
-	_mesh_root.add_child(_sphere(0.16, Vector3(0, 1.05, 0), skin))
-	var torso := _capsule(0.18, 1.05, Vector3(0, 1.6, 0), skin)
-	torso.rotation.x = 0.18                          # hunch forward
-	_mesh_root.add_child(torso)
-	_mesh_root.add_child(_sphere(0.21, Vector3(0, 2.0, 0.04), skin))
-	_mesh_root.add_child(_capsule(0.05, 0.22, Vector3(0, 2.2, 0.02), skin))
-
-	# Gaunt head that tracks the player: elongated skull, sunken glowing eyes,
-	# a gaping dark mouth.
-	_head_pivot = Node3D.new()
-	_head_pivot.position = Vector3(0, 2.34, 0.02)
-	_mesh_root.add_child(_head_pivot)
-	var head := _sphere(0.17, Vector3(0, 0.08, 0), skin)
-	head.scale = Vector3(0.85, 1.18, 0.95)
-	_head_pivot.add_child(head)
-	_head_pivot.add_child(_sphere(0.06, Vector3(-0.07, 0.11, -0.11), dark))
-	_head_pivot.add_child(_sphere(0.06, Vector3(0.07, 0.11, -0.11), dark))
-	_head_pivot.add_child(_sphere(0.033, Vector3(-0.07, 0.11, -0.15), eye_mat))
-	_head_pivot.add_child(_sphere(0.033, Vector3(0.07, 0.11, -0.15), eye_mat))
-	_head_pivot.add_child(_box(Vector3(0.1, 0.14, 0.06), Vector3(0, -0.06, -0.13), dark))
-
-	# Long, thin arms with claw fingers, reaching past the knees
-	_arm_l = Node3D.new()
-	_arm_l.position = Vector3(-0.24, 2.0, 0)
-	_mesh_root.add_child(_arm_l)
-	_build_arm(_arm_l, skin)
-	_arm_r = Node3D.new()
-	_arm_r.position = Vector3(0.24, 2.0, 0)
-	_mesh_root.add_child(_arm_r)
-	_build_arm(_arm_r, skin)
-
-	# Long thin legs
-	_leg_l = Node3D.new()
-	_leg_l.position = Vector3(-0.12, 1.05, 0)
-	_mesh_root.add_child(_leg_l)
-	_leg_l.add_child(_capsule(0.1, 1.15, Vector3(0, -0.52, 0), skin))
-	_leg_r = Node3D.new()
-	_leg_r.position = Vector3(0.12, 1.05, 0)
-	_mesh_root.add_child(_leg_r)
-	_leg_r.add_child(_capsule(0.1, 1.15, Vector3(0, -0.52, 0), skin))
+func _find_anim_node(n: Node) -> AnimationPlayer:
+	if n is AnimationPlayer:
+		return n
+	for c in n.get_children():
+		var r := _find_anim_node(c)
+		if r:
+			return r
+	return null
 
 func _build_arm(pivot: Node3D, mat: Material) -> void:
 	pivot.add_child(_capsule(0.07, 1.45, Vector3(0, -0.68, 0), mat))   # long thin arm
@@ -332,18 +317,14 @@ func _sphere(r: float, pos: Vector3, mat: Material) -> MeshInstance3D:
 	mi.position = pos
 	return mi
 
-## Lurching walk cycle (scaled by speed) + a head that swivels toward the player.
-func _animate(delta: float) -> void:
+## Drive the rigged model's clips from movement state: Idle when still, Walk
+## when wandering, Run when chasing.
+func _update_anim() -> void:
+	if _anim == null:
+		return
 	var spd := Vector2(velocity.x, velocity.z).length()
-	_anim_t += delta * (4.0 + spd * 1.2)
-	var swing := sin(_anim_t) * clampf(spd * 0.13, 0.0, 0.7)
-	if _arm_l: _arm_l.rotation.x = swing
-	if _arm_r: _arm_r.rotation.x = -swing
-	if _leg_l: _leg_l.rotation.x = -swing
-	if _leg_r: _leg_r.rotation.x = swing
-	if _mesh_root: _mesh_root.position.y = absf(sin(_anim_t)) * 0.05
-	if _head_pivot and player:
-		var to := player.global_position - _head_pivot.global_position
-		var local := global_transform.basis.inverse() * to
-		var yaw := atan2(local.x, -local.z)
-		_head_pivot.rotation.y = clampf(yaw, -1.1, 1.1)
+	var want := "CharacterArmature|Idle"
+	if spd > 0.4:
+		want = "CharacterArmature|Run" if _state == State.CHASE else "CharacterArmature|Walk"
+	if _anim.current_animation != want:
+		_anim.play(want)

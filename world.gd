@@ -588,6 +588,8 @@ func _on_player_caught() -> void:
 		var infront := p.global_position - p.global_transform.basis.z * 1.2
 		_monster.global_position = Vector3(infront.x, 0.0, infront.z)
 		_monster.look_at(Vector3(p.global_position.x, _monster.global_position.y, p.global_position.z), Vector3.UP)
+		if _monster.has_method("play_attack"):
+			_monster.play_attack()
 		if p.has_method("jumpscare"):
 			p.jumpscare(_monster.global_position)
 	_flash_red()
