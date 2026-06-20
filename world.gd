@@ -3,15 +3,15 @@ extends Node3D
 ## fluorescent lights and thick fog. Also stores the maze graph so the
 ## monster can pathfind through it in a later milestone.
 
-@export var cols := 16
-@export var rows := 16
-@export var cell_size := 4.0
+@export var cols := 22
+@export var rows := 22
+@export var cell_size := 4.5
 @export var wall_height := 3.0
 @export var wall_thickness := 0.3
 @export var maze_seed := 0  # 0 = random each run
-@export var objective_count := 6
-@export var interior_wall_chance := 0.10  # sparse walls => open, room-like space
-@export var column_step := 2              # support-pillar grid spacing (in cells)
+@export var objective_count := 8
+@export var interior_wall_chance := 0.16  # more partial-room structure (less empty)
+@export var column_step := 3              # support-pillar grid spacing (in cells)
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
 const MONSTER_SCENE := preload("res://monster.tscn")
@@ -416,23 +416,21 @@ func _add_box(size: Vector3, pos: Vector3, mat: Material) -> void:
 # --- Lighting ---------------------------------------------------------------
 
 func _add_lights() -> void:
-	# Dim, failing fluorescent fixtures — some dead, some buzzing and flickering.
-	for x in range(1, cols, 2):
-		for z in range(1, rows, 2):
+	# Dim, failing fluorescents — spaced out, with many missing (dark gaps).
+	# Dead tubes are skipped entirely (not created) to keep the light count low.
+	for x in range(2, cols, 3):
+		for z in range(2, rows, 3):
+			if _rng.randf() < 0.4:
+				continue
 			var light := OmniLight3D.new()
 			light.position = Vector3(x * cell_size + cell_size * 0.5, wall_height - 0.35, z * cell_size + cell_size * 0.5)
 			light.light_color = Color(0.95, 0.95, 0.85)
-			light.omni_range = cell_size * 2.5
+			light.omni_range = cell_size * 2.2
 			light.shadow_enabled = false
-			if _rng.randf() < 0.35:
-				light.light_energy = 0.0           # dead tube
-				light.set_meta("base", 0.0)
-				light.set_meta("flicker", false)
-			else:
-				var base := _rng.randf_range(0.25, 0.6)
-				light.light_energy = base
-				light.set_meta("base", base)
-				light.set_meta("flicker", _rng.randf() < 0.5)
+			var base := _rng.randf_range(0.3, 0.7)
+			light.light_energy = base
+			light.set_meta("base", base)
+			light.set_meta("flicker", _rng.randf() < 0.45)
 			_ceiling_lights.append(light)
 			add_child(light)
 

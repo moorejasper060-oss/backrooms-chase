@@ -24,3 +24,10 @@ Settings="*res://settings.gd"
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+
+[rendering]
+
+scaling_3d/scale=0.85
+environment/ssao/quality=1
+environment/ssao/half_size=true
+lights_and_shadows/positional_shadow/atlas_size=2048
