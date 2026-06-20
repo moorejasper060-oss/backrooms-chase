@@ -9,6 +9,15 @@ extends Node3D
 @export var wall_height := 3.0
 @export var wall_thickness := 0.3
 @export var maze_seed := 0  # 0 = random each run
+@export var objective_count := 6
+
+const PICKUP_SCENE := preload("res://pickup.tscn")
+
+# Objective tracking
+var _found := 0
+var _total := 0
+var _obj_label: Label
+var _win_label: Label
 
 # Maze edge data (true = a wall exists on that edge)
 var _wall_v := []  # vertical walls, size (cols+1) x rows
@@ -35,6 +44,7 @@ func _ready() -> void:
 	_generate_maze()
 	_build_geometry()
 	_place_player()
+	_spawn_pickups()
 	_add_lights()
 	_add_hud()
 
@@ -256,12 +266,76 @@ func _add_lights() -> void:
 
 func _add_hud() -> void:
 	var layer := CanvasLayer.new()
-	var label := Label.new()
-	label.text = "WASD: move    Shift: sprint    Mouse: look    Esc: free cursor"
-	label.position = Vector2(16, 16)
-	label.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
-	layer.add_child(label)
+
+	var controls := Label.new()
+	controls.text = "WASD: move    Shift: sprint    Mouse: look    Esc: free cursor"
+	controls.position = Vector2(16, 16)
+	controls.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	layer.add_child(controls)
+
+	_obj_label = Label.new()
+	_obj_label.position = Vector2(16, 44)
+	_obj_label.add_theme_font_size_override("font_size", 22)
+	_obj_label.add_theme_color_override("font_color", Color(0.6, 1.0, 0.7))
+	layer.add_child(_obj_label)
+
+	_win_label = Label.new()
+	_win_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_win_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_win_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_win_label.add_theme_font_size_override("font_size", 40)
+	_win_label.add_theme_color_override("font_color", Color(1, 1, 1))
+	_win_label.visible = false
+	layer.add_child(_win_label)
+
 	add_child(layer)
+	_update_objectives_hud()
+
+# --- Objectives -------------------------------------------------------------
+
+func _spawn_pickups() -> void:
+	var cells := _pick_cells(objective_count, Vector2i(0, 0))
+	_total = cells.size()
+	_found = 0
+	for cell in cells:
+		var pickup := PICKUP_SCENE.instantiate()
+		var pos := cell_to_world(cell)
+		pos.y = 1.1
+		pickup.position = pos
+		pickup.collected.connect(_on_pickup_collected)
+		add_child(pickup)
+
+## Pick `n` distinct open cells (shuffled), excluding the given cell.
+func _pick_cells(n: int, exclude: Vector2i) -> Array:
+	var all: Array[Vector2i] = []
+	for x in cols:
+		for z in rows:
+			var c := Vector2i(x, z)
+			if c != exclude:
+				all.append(c)
+	# Fisher-Yates shuffle with our seeded RNG
+	for i in range(all.size() - 1, 0, -1):
+		var j := _rng.randi_range(0, i)
+		var tmp := all[i]
+		all[i] = all[j]
+		all[j] = tmp
+	return all.slice(0, mini(n, all.size()))
+
+func _on_pickup_collected() -> void:
+	_found += 1
+	_update_objectives_hud()
+	if _found >= _total:
+		_win()
+
+func _update_objectives_hud() -> void:
+	if _obj_label:
+		_obj_label.text = "Objectives found: %d / %d" % [_found, _total]
+
+func _win() -> void:
+	if _win_label:
+		_win_label.text = "ALL OBJECTIVES FOUND\nYou made it out... this time."
+		_win_label.visible = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 # --- Helpers for later milestones (monster pathfinding, item spawns) --------
 

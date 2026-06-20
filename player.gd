@@ -12,6 +12,7 @@ extends CharacterBody3D
 var _pitch := 0.0
 
 func _ready() -> void:
+	add_to_group("player")
 	_ensure_input_actions()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
