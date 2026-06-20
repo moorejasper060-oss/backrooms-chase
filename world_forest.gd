@@ -29,11 +29,24 @@ shader_type canvas_item;
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear, repeat_disable;
 uniform float grain = 0.06;
 uniform float vignette = 0.55;
+uniform float dread = 0.0;   // 0..1, driven from entity proximity each frame
 void fragment() {
-	vec3 col = texture(screen_tex, SCREEN_UV).rgb;
-	vec2 d = SCREEN_UV - 0.5;
+	vec2 uv = SCREEN_UV;
+	vec2 d = uv - 0.5;
+	// Sickening breathing warp as dread rises.
+	uv += d * dread * 0.035 * sin(TIME * 2.7);
+	// Chromatic aberration that splits harder the closer it gets.
+	float ca = dread * 0.007;
+	vec3 col;
+	col.r = texture(screen_tex, uv + d * ca).r;
+	col.g = texture(screen_tex, uv).g;
+	col.b = texture(screen_tex, uv - d * ca).b;
+	// Vignette tightens with dread.
 	float vig = smoothstep(0.85, 0.2, length(d));
-	col *= mix(1.0 - vignette, 1.0, vig);
+	col *= mix(1.0 - vignette - dread * 0.22, 1.0, vig);
+	// Bleed color toward grey as dread peaks.
+	float g = dot(col, vec3(0.299, 0.587, 0.114));
+	col = mix(col, vec3(g), dread * 0.35);
 	float n = fract(sin(dot(SCREEN_UV + fract(TIME), vec2(12.9898, 78.233))) * 43758.5453);
 	col += (n - 0.5) * grain;
 	COLOR = vec4(col, 1.0);
@@ -54,6 +67,8 @@ var _car_ready := false
 var _player: Node3D
 var _audio: Node
 var _spot_cooldown := 0.0
+var _post_mat: ShaderMaterial
+var _dread := 0.0
 
 # Navigation grid (open forest: every non-blocked cell connects to its
 # 4 neighbours; trees/cabin block cells). Same interface the monster expects.
@@ -105,6 +120,14 @@ func _setup_environment() -> void:
 	env.fog_light_color = Color(0.05, 0.07, 0.11)
 	env.fog_density = 0.085
 	env.fog_sky_affect = 1.0
+	# Volumetric fog: real ground mist the entity emerges from, and god-rays in
+	# the flashlight beam. Modest density to stay cheap.
+	env.volumetric_fog_enabled = true
+	env.volumetric_fog_density = 0.035
+	env.volumetric_fog_albedo = Color(0.55, 0.65, 0.85)
+	env.volumetric_fog_emission = Color(0.015, 0.02, 0.035)
+	env.volumetric_fog_length = 32.0          # shorter volume = cheaper; fog hides the far field anyway
+	env.volumetric_fog_detail_spread = 2.0
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.ssao_enabled = true
 	env.ssao_radius = 2.0
@@ -191,6 +214,7 @@ func _place_tree(cell: Vector2i, trunk_mat: Material, pine_mat: Material, leafy_
 	trunk.mesh = cm
 	trunk.material_override = trunk_mat
 	trunk.position = Vector3(0.0, h * 0.25, 0.0)
+	trunk.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	body.add_child(trunk)
 
 	if _rng.randf() < 0.6:
@@ -204,6 +228,7 @@ func _place_tree(cell: Vector2i, trunk_mat: Material, pine_mat: Material, leafy_
 			cone.mesh = con
 			cone.material_override = pine_mat
 			cone.position = Vector3(0.0, h * 0.45 + i * h * 0.2, 0.0)
+			cone.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			body.add_child(cone)
 	else:
 		# Broadleaf: a cluster of dark canopy blobs.
@@ -216,6 +241,7 @@ func _place_tree(cell: Vector2i, trunk_mat: Material, pine_mat: Material, leafy_
 			blob.mesh = sm
 			blob.material_override = leafy_mat
 			blob.position = Vector3(_rng.randf_range(-0.5, 0.5), h * 0.6 + i * h * 0.12, _rng.randf_range(-0.5, 0.5))
+			blob.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			body.add_child(blob)
 
 	var col := CollisionShape3D.new()
@@ -540,12 +566,14 @@ func _add_post_processing() -> void:
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
 	rect.material = mat
+	_post_mat = mat
 	layer.add_child(rect)
 
 # --- Per-frame: monster audio/rumble + escape beacon ------------------------
 
 func _process(delta: float) -> void:
 	_spot_cooldown = maxf(0.0, _spot_cooldown - delta)
+	var target_dread := 0.0
 	if _monster and _player and not _game_over:
 		var dd := _monster.global_position.distance_to(_player.global_position)
 		var chasing: bool = _monster.is_chasing()
@@ -553,6 +581,12 @@ func _process(delta: float) -> void:
 			_audio.update(dd, chasing, delta)
 		if chasing and dd < 7.0 and _player.has_method("add_shake"):
 			_player.add_shake((7.0 - dd) / 7.0 * 0.6 * delta)
+		# Dread rises as it nears, harder while it's actively hunting.
+		var prox := clampf(1.0 - dd / 14.0, 0.0, 1.0)
+		target_dread = (0.25 + prox * 0.75) if chasing else prox * 0.6
+	if _post_mat:
+		_dread = lerpf(_dread, target_dread, clampf(delta * 3.0, 0.0, 1.0))
+		_post_mat.set_shader_parameter("dread", _dread)
 	if _car_ready and _car and _player and _obj_label and not _game_over:
 		var cd := _player.global_position.distance_to(_car.global_position)
 		_obj_label.text = "CAR REPAIRED  —  GET TO IT  —  %dm" % int(cd)

@@ -11,6 +11,7 @@ var _stinger: AudioStreamPlayer
 var _blip: AudioStreamPlayer
 var _screech: AudioStreamPlayer
 var _foot: AudioStreamPlayer
+var _wind: AudioStreamPlayer
 
 var _hb_accum := 0.0
 var _step_accum := 0.0
@@ -23,8 +24,10 @@ func _ready() -> void:
 	_blip = _make_player(_make_blip(), false, -5.0)
 	_screech = _make_player(_make_screech(), false, -1.0)
 	_foot = _make_player(_make_footstep(), false, -6.0)
+	_wind = _make_player(_make_wind(), true, -15.0)
 	_drone.play()
 	_growl.play()
+	_wind.play()
 
 func _make_player(stream: AudioStream, looping: bool, vol_db: float) -> AudioStreamPlayer:
 	var p := AudioStreamPlayer.new()
@@ -163,6 +166,20 @@ func _make_screech() -> AudioStreamWAV:
 		v += 0.3 * (randf() * 2.0 - 1.0)
 		s[i] = v * env * 0.7
 	return _make_wav(s, false)
+
+## Low, breathy forest wind: low-passed noise swelling in slow gusts.
+func _make_wind() -> AudioStreamWAV:
+	var n := RATE * 4
+	var s := PackedFloat32Array()
+	s.resize(n)
+	var lp := 0.0
+	for i in n:
+		var t := float(i) / RATE
+		var white := randf() * 2.0 - 1.0
+		lp = lp * 0.96 + white * 0.04          # one-pole low-pass → wind rumble
+		var gust := 0.45 + 0.55 * sin(TAU * 0.08 * t + 1.5 * sin(TAU * 0.031 * t))
+		s[i] = lp * gust * 2.2                  # boost (low-pass kills amplitude)
+	return _make_wav(s, true)
 
 func _make_blip() -> AudioStreamWAV:
 	var n := int(RATE * 0.22)
