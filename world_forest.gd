@@ -10,7 +10,7 @@ extends Node3D
 @export var cell_size := 3.0          # 40 * 3 = 120 m of forest
 @export var part_count := 5           # car parts to find
 @export var battery_count := 5        # flashlight batteries scattered
-@export var tree_count := 300         # scattered interior trees (denser)
+@export var tree_count := 480         # scattered interior trees (MultiMesh — cheap to go dense)
 @export var bush_count := 120         # primitive filler bushes (real ferns/logs added on top)
 @export var log_count := 0            # replaced by real Poly Haven fallen logs
 @export var forest_seed := 0          # 0 = random each run
@@ -81,6 +81,7 @@ var _rng := RandomNumberGenerator.new()
 var _mat_ground: StandardMaterial3D
 var _mat_bark: StandardMaterial3D
 var _mat_cabin: StandardMaterial3D
+var _mat_foliage: StandardMaterial3D
 
 func _ready() -> void:
 	if forest_seed != 0:
@@ -166,6 +167,8 @@ func _make_materials() -> void:
 	_mat_bark.albedo_color = Color(0.7, 0.7, 0.68)
 	_mat_cabin = _pbr_material("res://textures/cabin_", Vector3(0.45, 0.45, 0.45))
 	_mat_cabin.albedo_color = Color(0.6, 0.58, 0.55)
+	_mat_foliage = _pbr_material("res://textures/foliage_", Vector3(0.85, 0.85, 0.85))
+	_mat_foliage.albedo_color = Color(0.4, 0.5, 0.32)    # dark green night tint
 
 func _pbr_material(prefix: String, uv_scale: Vector3) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -203,21 +206,17 @@ func _make_ground() -> void:
 ## the woods, then sparse interior trees. Each blocks its grid cell so the
 ## monster pathfinds around the trunks; the player/monster physically collide.
 func _scatter_trees() -> void:
-	var trunk_mat: Material = _mat_bark   # real bark PBR
-	var pine_mat := StandardMaterial3D.new()
-	pine_mat.albedo_color = Color(0.03, 0.05, 0.038)    # near-black pine
-	pine_mat.roughness = 1.0
-	var leafy_mat := StandardMaterial3D.new()
-	leafy_mat.albedo_color = Color(0.05, 0.07, 0.045)   # slightly greener broadleaf
-	leafy_mat.roughness = 1.0
+	var pine_xforms := []
+	var leaf_xforms := []
+	var colliders := []
 
-	# Dense impassable border wall (double ring for a solid edge you can't slip).
+	# Dense impassable border wall (2-cell-thick), all conifers.
 	for x in cols:
 		for z in rows:
 			if x <= 1 or x >= cols - 2 or z <= 1 or z >= rows - 2:
-				_place_tree(Vector2i(x, z), trunk_mat, pine_mat, leafy_mat)
+				_add_tree_xform(Vector2i(x, z), pine_xforms, colliders)
 
-	# Denser interior trees.
+	# Denser interior, mixed conifer / broadleaf.
 	var placed := 0
 	var attempts := 0
 	while placed < tree_count and attempts < tree_count * 6:
@@ -227,68 +226,116 @@ func _scatter_trees() -> void:
 			continue
 		if Vector2(cell.x - _spawn_cell.x, cell.y - _spawn_cell.y).length() < 4.0:
 			continue  # don't bury the player at spawn
-		_place_tree(cell, trunk_mat, pine_mat, leafy_mat)
+		_add_tree_xform(cell, pine_xforms if _rng.randf() < 0.65 else leaf_xforms, colliders)
 		placed += 1
 
-func _place_tree(cell: Vector2i, trunk_mat: Material, pine_mat: Material, leafy_mat: Material) -> void:
+	# Whole forest in a couple of GPU-instanced draw calls.
+	_make_multimesh(_build_conifer_mesh(), pine_xforms)
+	_make_multimesh(_build_broadleaf_mesh(), leaf_xforms)
+
+	# Collision-only cylinders (the MultiMesh is the visual).
+	for c in colliders:
+		_tree_collider(c[0], c[1])
+
+func _add_tree_xform(cell: Vector2i, arr: Array, colliders: Array) -> void:
 	_block(cell)
 	var base := cell_to_world(cell)
+	var pos := Vector3(base.x + _rng.randf_range(-0.9, 0.9), 0.0, base.z + _rng.randf_range(-0.9, 0.9))
+	var s := _rng.randf_range(0.8, 1.5)
+	var yaw := _rng.randf_range(0.0, TAU)
+	arr.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s)), pos))
+	colliders.append([pos, s])
+
+func _make_multimesh(mesh: Mesh, xforms: Array) -> void:
+	if xforms.is_empty():
+		return
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = xforms.size()
+	for i in xforms.size():
+		mm.set_instance_transform(i, xforms[i])
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
+
+func _tree_collider(pos: Vector3, s: float) -> void:
 	var body := StaticBody3D.new()
-	body.position = Vector3(base.x + _rng.randf_range(-0.9, 0.9), 0.0, base.z + _rng.randf_range(-0.9, 0.9))
-	body.rotation.y = _rng.randf_range(0.0, TAU)
-
-	var h := _rng.randf_range(4.5, 8.5)
-	var tr := _rng.randf_range(0.16, 0.32)
-
-	var trunk := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = tr * 0.7
-	cm.bottom_radius = tr
-	cm.height = h * 0.5
-	trunk.mesh = cm
-	trunk.material_override = trunk_mat
-	trunk.position = Vector3(0.0, h * 0.25, 0.0)
-	trunk.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	body.add_child(trunk)
-
-	if _rng.randf() < 0.6:
-		# Pine: stacked cones, jittered + size-varied so they don't read as a
-		# perfect geometric cone.
-		for i in 4:
-			var cone := MeshInstance3D.new()
-			var con := CylinderMesh.new()
-			con.top_radius = 0.0
-			con.bottom_radius = (1.9 - i * 0.38) * (tr / 0.22) * _rng.randf_range(0.82, 1.18)
-			con.height = h * 0.3
-			cone.mesh = con
-			cone.material_override = pine_mat
-			var jit := 0.18 * (tr / 0.22)
-			cone.position = Vector3(_rng.randf_range(-jit, jit), h * 0.4 + i * h * 0.16, _rng.randf_range(-jit, jit))
-			cone.rotation = Vector3(_rng.randf_range(-0.1, 0.1), _rng.randf_range(0.0, TAU), _rng.randf_range(-0.1, 0.1))
-			cone.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			body.add_child(cone)
-	else:
-		# Broadleaf: a cluster of dark canopy blobs.
-		for i in 3:
-			var blob := MeshInstance3D.new()
-			var sm := SphereMesh.new()
-			var br := (1.4 - i * 0.25) * (tr / 0.22)
-			sm.radius = br
-			sm.height = br * 1.7
-			blob.mesh = sm
-			blob.material_override = leafy_mat
-			blob.position = Vector3(_rng.randf_range(-0.5, 0.5), h * 0.6 + i * h * 0.12, _rng.randf_range(-0.5, 0.5))
-			blob.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			body.add_child(blob)
-
+	body.position = pos
 	var col := CollisionShape3D.new()
 	var sh := CylinderShape3D.new()
-	sh.radius = tr + 0.18
-	sh.height = h
+	sh.radius = 0.4 * s
+	sh.height = 7.0 * s
 	col.shape = sh
-	col.position = Vector3(0.0, h * 0.5, 0.0)
+	col.position = Vector3(0.0, 3.5 * s, 0.0)
 	body.add_child(col)
 	add_child(body)
+
+## A layered conifer as one 2-surface mesh (trunk=bark, foliage=leaves) so the
+## whole forest renders via MultiMesh in a couple of draw calls. Many drooping
+## cone skirts give a full, three-dimensional canopy instead of one flat cone.
+func _build_conifer_mesh() -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	var ts := SurfaceTool.new()
+	ts.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.10
+	trunk.bottom_radius = 0.24
+	trunk.height = 3.4
+	trunk.radial_segments = 8
+	ts.append_from(trunk, 0, Transform3D(Basis(), Vector3(0.0, 1.7, 0.0)))
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ts.commit_to_arrays())
+	mesh.surface_set_material(0, _mat_bark)
+
+	var fs := SurfaceTool.new()
+	fs.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var layers := 9
+	for i in layers:
+		var f := float(i) / float(layers - 1)
+		var cone := CylinderMesh.new()
+		cone.top_radius = 0.0
+		cone.bottom_radius = lerpf(2.5, 0.35, f)
+		cone.height = 1.5
+		cone.radial_segments = 10
+		fs.append_from(cone, 0, Transform3D(Basis(), Vector3(0.0, 2.4 + i * 0.62, 0.0)))
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, fs.commit_to_arrays())
+	mesh.surface_set_material(1, _mat_foliage)
+	return mesh
+
+## A broadleaf as one 2-surface mesh: taller trunk + a rounded cluster crown.
+func _build_broadleaf_mesh() -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	var ts := SurfaceTool.new()
+	ts.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.14
+	trunk.bottom_radius = 0.26
+	trunk.height = 4.2
+	trunk.radial_segments = 8
+	ts.append_from(trunk, 0, Transform3D(Basis(), Vector3(0.0, 2.1, 0.0)))
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ts.commit_to_arrays())
+	mesh.surface_set_material(0, _mat_bark)
+
+	var fs := SurfaceTool.new()
+	fs.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var blobs := [
+		[Vector3(0.0, 5.2, 0.0), 2.0],
+		[Vector3(1.2, 4.6, 0.4), 1.4],
+		[Vector3(-1.0, 4.7, -0.6), 1.4],
+		[Vector3(0.3, 5.9, -0.8), 1.2],
+		[Vector3(-0.5, 5.6, 0.9), 1.3],
+	]
+	for b in blobs:
+		var sm := SphereMesh.new()
+		sm.radius = b[1]
+		sm.height = float(b[1]) * 1.9
+		sm.radial_segments = 10
+		sm.rings = 6
+		fs.append_from(sm, 0, Transform3D(Basis(), b[0]))
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, fs.commit_to_arrays())
+	mesh.surface_set_material(1, _mat_foliage)
+	return mesh
 
 ## Pure-visual ground clutter for density — bushes + fallen logs. No collision
 ## and no grid blocking, so they never trap the player or fragment pathfinding.
