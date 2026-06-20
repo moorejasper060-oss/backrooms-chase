@@ -29,10 +29,19 @@ var _lose := 0.0
 var _lunge_timer := 0.0
 var _wander_target = null  # Vector2i, or null when we need a new one
 
+# Animated body parts
+var _mesh_root: Node3D
+var _head_pivot: Node3D
+var _arm_l: Node3D
+var _arm_r: Node3D
+var _leg_l: Node3D
+var _leg_r: Node3D
+var _anim_t := 0.0
+
 func _ready() -> void:
 	add_to_group("monster")
 	world = get_parent()
-	_setup_appearance()
+	_build_body()
 
 func _physics_process(delta: float) -> void:
 	if not active:
@@ -58,6 +67,7 @@ func _physics_process(delta: float) -> void:
 
 	_follow_path()
 	move_and_slide()
+	_animate(delta)
 	_check_catch()
 
 func _update_state(delta: float) -> void:
@@ -141,18 +151,88 @@ func _can_see_player() -> bool:
 		return true
 	return (hit.collider as Node).is_in_group("player")
 
-func _setup_appearance() -> void:
-	var body_mat := StandardMaterial3D.new()
-	body_mat.albedo_color = Color(0.04, 0.04, 0.05)
-	body_mat.roughness = 1.0
-	$Body.material_override = body_mat
+## Builds a tall, thin, hunched humanoid out of primitives, with pivots for
+## the limbs and head so we can animate a lurching walk and head-tracking.
+func _build_body() -> void:
+	var dark := StandardMaterial3D.new()
+	dark.albedo_color = Color(0.03, 0.03, 0.04)
+	dark.roughness = 1.0
 
 	var eye_mat := StandardMaterial3D.new()
 	eye_mat.albedo_color = Color(1, 0, 0)
 	eye_mat.emission_enabled = true
 	eye_mat.emission = Color(1.0, 0.05, 0.05)
 	eye_mat.emission_energy_multiplier = 6.0
-	$EyeL.material_override = eye_mat
-	$EyeR.material_override = eye_mat
+
+	_mesh_root = Node3D.new()
+	add_child(_mesh_root)
+
+	# Torso, hunched slightly forward
+	var torso := _box(Vector3(0.42, 1.25, 0.26), Vector3(0, 1.42, 0), dark)
+	torso.rotation.x = 0.12
+	_mesh_root.add_child(torso)
+
+	# Head (tracks the player) with glowing eyes on its front (-Z)
+	_head_pivot = Node3D.new()
+	_head_pivot.position = Vector3(0, 2.02, 0)
+	_mesh_root.add_child(_head_pivot)
+	_head_pivot.add_child(_box(Vector3(0.28, 0.32, 0.28), Vector3(0, 0.16, 0), dark))
+	_head_pivot.add_child(_sphere(0.055, Vector3(-0.08, 0.17, -0.15), eye_mat))
+	_head_pivot.add_child(_sphere(0.055, Vector3(0.08, 0.17, -0.15), eye_mat))
+
+	# Long arms hanging from the shoulders
+	_arm_l = Node3D.new()
+	_arm_l.position = Vector3(-0.3, 1.9, 0)
+	_mesh_root.add_child(_arm_l)
+	_arm_l.add_child(_box(Vector3(0.11, 1.05, 0.11), Vector3(0, -0.5, 0), dark))
+	_arm_r = Node3D.new()
+	_arm_r.position = Vector3(0.3, 1.9, 0)
+	_mesh_root.add_child(_arm_r)
+	_arm_r.add_child(_box(Vector3(0.11, 1.05, 0.11), Vector3(0, -0.5, 0), dark))
+
+	# Legs
+	_leg_l = Node3D.new()
+	_leg_l.position = Vector3(-0.13, 0.95, 0)
+	_mesh_root.add_child(_leg_l)
+	_leg_l.add_child(_box(Vector3(0.14, 0.95, 0.14), Vector3(0, -0.47, 0), dark))
+	_leg_r = Node3D.new()
+	_leg_r.position = Vector3(0.13, 0.95, 0)
+	_mesh_root.add_child(_leg_r)
+	_leg_r.add_child(_box(Vector3(0.14, 0.95, 0.14), Vector3(0, -0.47, 0), dark))
 
 	$Light.light_color = Color(1.0, 0.15, 0.15)
+
+func _box(size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var m := BoxMesh.new()
+	m.size = size
+	mi.mesh = m
+	mi.material_override = mat
+	mi.position = pos
+	return mi
+
+func _sphere(r: float, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var m := SphereMesh.new()
+	m.radius = r
+	m.height = r * 2.0
+	mi.mesh = m
+	mi.material_override = mat
+	mi.position = pos
+	return mi
+
+## Lurching walk cycle (scaled by speed) + a head that swivels toward the player.
+func _animate(delta: float) -> void:
+	var spd := Vector2(velocity.x, velocity.z).length()
+	_anim_t += delta * (4.0 + spd * 1.2)
+	var swing := sin(_anim_t) * clampf(spd * 0.13, 0.0, 0.7)
+	if _arm_l: _arm_l.rotation.x = swing
+	if _arm_r: _arm_r.rotation.x = -swing
+	if _leg_l: _leg_l.rotation.x = -swing
+	if _leg_r: _leg_r.rotation.x = swing
+	if _mesh_root: _mesh_root.position.y = absf(sin(_anim_t)) * 0.05
+	if _head_pivot and player:
+		var to := player.global_position - _head_pivot.global_position
+		var local := global_transform.basis.inverse() * to
+		var yaw := atan2(local.x, -local.z)
+		_head_pivot.rotation.y = clampf(yaw, -1.1, 1.1)

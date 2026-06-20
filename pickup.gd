@@ -37,5 +37,7 @@ func _process(delta: float) -> void:
 func _on_body_entered(body: Node) -> void:
 	# Only the player collects (the monster, also a CharacterBody3D, won't).
 	if body.is_in_group("player"):
+		if body.has_method("collect_pickup"):
+			body.collect_pickup()
 		collected.emit()
 		queue_free()

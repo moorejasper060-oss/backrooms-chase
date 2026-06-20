@@ -24,6 +24,9 @@ var _win_label: Label
 var _monster: Node3D
 var _game_over := false
 
+# Flickering ceiling lights
+var _ceiling_lights: Array[OmniLight3D] = []
+
 # Maze edge data (true = a wall exists on that edge)
 var _wall_v := []  # vertical walls, size (cols+1) x rows
 var _wall_h := []  # horizontal walls, size cols x (rows+1)
@@ -62,7 +65,7 @@ func _setup_environment() -> void:
 	env.background_color = Color(0.02, 0.02, 0.0)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.95, 0.88, 0.6)
-	env.ambient_light_energy = 0.5
+	env.ambient_light_energy = 0.07
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.09, 0.085, 0.05)
 	env.fog_density = 0.045
@@ -257,16 +260,31 @@ func _add_box(size: Vector3, pos: Vector3, mat: Material) -> void:
 # --- Lighting ---------------------------------------------------------------
 
 func _add_lights() -> void:
-	# Buzzing fluorescent fixtures every few cells, hung from the ceiling.
-	for x in range(1, cols, 3):
-		for z in range(1, rows, 3):
+	# Dim, failing fluorescent fixtures — some dead, some buzzing and flickering.
+	for x in range(1, cols, 2):
+		for z in range(1, rows, 2):
 			var light := OmniLight3D.new()
-			light.position = Vector3(x * cell_size + cell_size * 0.5, wall_height - 0.4, z * cell_size + cell_size * 0.5)
-			light.light_color = Color(1.0, 0.97, 0.8)
-			light.light_energy = 1.6
-			light.omni_range = cell_size * 3.0
+			light.position = Vector3(x * cell_size + cell_size * 0.5, wall_height - 0.35, z * cell_size + cell_size * 0.5)
+			light.light_color = Color(0.95, 0.95, 0.85)
+			light.omni_range = cell_size * 2.5
 			light.shadow_enabled = false
+			if _rng.randf() < 0.35:
+				light.light_energy = 0.0           # dead tube
+				light.set_meta("base", 0.0)
+				light.set_meta("flicker", false)
+			else:
+				var base := _rng.randf_range(0.25, 0.6)
+				light.light_energy = base
+				light.set_meta("base", base)
+				light.set_meta("flicker", _rng.randf() < 0.5)
+			_ceiling_lights.append(light)
 			add_child(light)
+
+func _process(_delta: float) -> void:
+	# Cheap fluorescent stutter on the flickering tubes.
+	for l in _ceiling_lights:
+		if l.get_meta("flicker", false) and _rng.randf() < 0.07:
+			l.light_energy = 0.0 if _rng.randf() < 0.5 else l.get_meta("base", 0.4)
 
 # --- HUD --------------------------------------------------------------------
 
