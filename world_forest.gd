@@ -78,7 +78,9 @@ var _reachable := {}
 var _spawn_cell := Vector2i(5, 5)
 
 var _rng := RandomNumberGenerator.new()
-var _ground_mat: StandardMaterial3D
+var _mat_ground: StandardMaterial3D
+var _mat_bark: StandardMaterial3D
+var _mat_cabin: StandardMaterial3D
 
 func _ready() -> void:
 	if forest_seed != 0:
@@ -86,6 +88,7 @@ func _ready() -> void:
 	else:
 		_rng.randomize()
 	_setup_environment()
+	_make_materials()
 	_make_ground()
 	_scatter_trees()
 	_scatter_decoration()   # bushes + logs (visual only, after trees)
@@ -153,13 +156,45 @@ func _setup_environment() -> void:
 	moon.directional_shadow_max_distance = 45.0   # fog hides the far field; keeps shadow cost down with many trees
 	add_child(moon)
 
+## Real CC0 PBR textures (Poly Haven), triplanar world-mapped so they tile over
+## any surface. Loaded at runtime from textures/ via Image.load (no import step).
+func _make_materials() -> void:
+	_mat_ground = _pbr_material("res://textures/forestfloor_", Vector3(0.16, 0.16, 0.16))
+	_mat_ground.albedo_color = Color(0.72, 0.74, 0.7)    # gentle knock-down for night
+	_mat_bark = _pbr_material("res://textures/bark_", Vector3(0.5, 0.5, 0.5))
+	_mat_bark.albedo_color = Color(0.7, 0.7, 0.68)
+	_mat_cabin = _pbr_material("res://textures/cabin_", Vector3(0.45, 0.45, 0.45))
+	_mat_cabin.albedo_color = Color(0.6, 0.58, 0.55)
+
+func _pbr_material(prefix: String, uv_scale: Vector3) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	var albedo := _load_tex(prefix + "color.jpg")
+	if albedo:
+		m.albedo_texture = albedo
+	var nrm := _load_tex(prefix + "normal.jpg")
+	if nrm:
+		m.normal_enabled = true
+		m.normal_texture = nrm
+		m.normal_scale = 1.2
+	var rgh := _load_tex(prefix + "rough.jpg")
+	if rgh:
+		m.roughness_texture = rgh
+	m.uv1_triplanar = true
+	m.uv1_world_triplanar = true
+	m.uv1_scale = uv_scale
+	return m
+
+func _load_tex(path: String) -> ImageTexture:
+	var img := Image.new()
+	if img.load(ProjectSettings.globalize_path(path)) != OK:
+		return null
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
 func _make_ground() -> void:
 	var w := cols * cell_size
 	var d := rows * cell_size
-	_ground_mat = StandardMaterial3D.new()
-	_ground_mat.albedo_color = Color(0.07, 0.075, 0.06)       # damp dark earth (M1: CC0 texture)
-	_ground_mat.roughness = 1.0
-	_add_box(Vector3(w + 20.0, 0.4, d + 20.0), Vector3(w * 0.5, -0.2, d * 0.5), _ground_mat)
+	_add_box(Vector3(w + 20.0, 0.4, d + 20.0), Vector3(w * 0.5, -0.2, d * 0.5), _mat_ground)
 
 # --- Forest generation ------------------------------------------------------
 
@@ -167,9 +202,7 @@ func _make_ground() -> void:
 ## the woods, then sparse interior trees. Each blocks its grid cell so the
 ## monster pathfinds around the trunks; the player/monster physically collide.
 func _scatter_trees() -> void:
-	var trunk_mat := StandardMaterial3D.new()
-	trunk_mat.albedo_color = Color(0.05, 0.04, 0.035)
-	trunk_mat.roughness = 1.0
+	var trunk_mat: Material = _mat_bark   # real bark PBR
 	var pine_mat := StandardMaterial3D.new()
 	pine_mat.albedo_color = Color(0.03, 0.05, 0.038)    # near-black pine
 	pine_mat.roughness = 1.0
@@ -310,9 +343,7 @@ func _build_cabin() -> void:
 	var cabin_pos := spawn_world + outward * 5.5
 	cabin_pos.y = 0.0
 
-	var wood := StandardMaterial3D.new()
-	wood.albedo_color = Color(0.10, 0.08, 0.06)
-	wood.roughness = 1.0
+	var wood: Material = _mat_cabin   # real wood-plank PBR
 	var roof_mat := StandardMaterial3D.new()
 	roof_mat.albedo_color = Color(0.05, 0.045, 0.045)
 	roof_mat.roughness = 1.0
