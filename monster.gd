@@ -236,54 +236,82 @@ func _can_see_player() -> bool:
 		return true
 	return (hit.collider as Node).is_in_group("player")
 
-## Builds a tall, thin, hunched humanoid out of primitives, with pivots for
-## the limbs and head so we can animate a lurching walk and head-tracking.
+## Builds a gaunt, pale, hunched humanoid from rounded primitives, with pivots
+## for the limbs and head so we can animate a lurching walk and head-tracking.
 func _build_body() -> void:
+	var skin := StandardMaterial3D.new()
+	skin.albedo_color = Color(0.62, 0.58, 0.53)   # pale, sickly flesh
+	skin.roughness = 0.85
+
 	var dark := StandardMaterial3D.new()
-	dark.albedo_color = Color(0.03, 0.03, 0.04)
+	dark.albedo_color = Color(0.02, 0.02, 0.02)    # sunken sockets / mouth
 	dark.roughness = 1.0
 
 	var eye_mat := StandardMaterial3D.new()
-	eye_mat.albedo_color = Color(1, 0, 0)
+	eye_mat.albedo_color = Color(0.1, 0.0, 0.0)
 	eye_mat.emission_enabled = true
 	eye_mat.emission = Color(1.0, 0.05, 0.05)
-	eye_mat.emission_energy_multiplier = 3.0
+	eye_mat.emission_energy_multiplier = 2.2
 
 	_mesh_root = Node3D.new()
 	add_child(_mesh_root)
 
-	# Torso, hunched slightly forward
-	var torso := _box(Vector3(0.42, 1.25, 0.26), Vector3(0, 1.42, 0), dark)
-	torso.rotation.x = 0.12
+	# Pelvis, hunched torso, hunched shoulders, thin neck
+	_mesh_root.add_child(_sphere(0.16, Vector3(0, 1.05, 0), skin))
+	var torso := _capsule(0.18, 1.05, Vector3(0, 1.6, 0), skin)
+	torso.rotation.x = 0.18                          # hunch forward
 	_mesh_root.add_child(torso)
+	_mesh_root.add_child(_sphere(0.21, Vector3(0, 2.0, 0.04), skin))
+	_mesh_root.add_child(_capsule(0.05, 0.22, Vector3(0, 2.2, 0.02), skin))
 
-	# Head (tracks the player) with glowing eyes on its front (-Z)
+	# Gaunt head that tracks the player: elongated skull, sunken glowing eyes,
+	# a gaping dark mouth.
 	_head_pivot = Node3D.new()
-	_head_pivot.position = Vector3(0, 2.02, 0)
+	_head_pivot.position = Vector3(0, 2.34, 0.02)
 	_mesh_root.add_child(_head_pivot)
-	_head_pivot.add_child(_box(Vector3(0.28, 0.32, 0.28), Vector3(0, 0.16, 0), dark))
-	_head_pivot.add_child(_sphere(0.055, Vector3(-0.08, 0.17, -0.15), eye_mat))
-	_head_pivot.add_child(_sphere(0.055, Vector3(0.08, 0.17, -0.15), eye_mat))
+	var head := _sphere(0.17, Vector3(0, 0.08, 0), skin)
+	head.scale = Vector3(0.85, 1.18, 0.95)
+	_head_pivot.add_child(head)
+	_head_pivot.add_child(_sphere(0.06, Vector3(-0.07, 0.11, -0.11), dark))
+	_head_pivot.add_child(_sphere(0.06, Vector3(0.07, 0.11, -0.11), dark))
+	_head_pivot.add_child(_sphere(0.033, Vector3(-0.07, 0.11, -0.15), eye_mat))
+	_head_pivot.add_child(_sphere(0.033, Vector3(0.07, 0.11, -0.15), eye_mat))
+	_head_pivot.add_child(_box(Vector3(0.1, 0.14, 0.06), Vector3(0, -0.06, -0.13), dark))
 
-	# Long arms hanging from the shoulders
+	# Long, thin arms with claw fingers, reaching past the knees
 	_arm_l = Node3D.new()
-	_arm_l.position = Vector3(-0.3, 1.9, 0)
+	_arm_l.position = Vector3(-0.24, 2.0, 0)
 	_mesh_root.add_child(_arm_l)
-	_arm_l.add_child(_box(Vector3(0.11, 1.05, 0.11), Vector3(0, -0.5, 0), dark))
+	_build_arm(_arm_l, skin)
 	_arm_r = Node3D.new()
-	_arm_r.position = Vector3(0.3, 1.9, 0)
+	_arm_r.position = Vector3(0.24, 2.0, 0)
 	_mesh_root.add_child(_arm_r)
-	_arm_r.add_child(_box(Vector3(0.11, 1.05, 0.11), Vector3(0, -0.5, 0), dark))
+	_build_arm(_arm_r, skin)
 
-	# Legs
+	# Long thin legs
 	_leg_l = Node3D.new()
-	_leg_l.position = Vector3(-0.13, 0.95, 0)
+	_leg_l.position = Vector3(-0.12, 1.05, 0)
 	_mesh_root.add_child(_leg_l)
-	_leg_l.add_child(_box(Vector3(0.14, 0.95, 0.14), Vector3(0, -0.47, 0), dark))
+	_leg_l.add_child(_capsule(0.1, 1.15, Vector3(0, -0.52, 0), skin))
 	_leg_r = Node3D.new()
-	_leg_r.position = Vector3(0.13, 0.95, 0)
+	_leg_r.position = Vector3(0.12, 1.05, 0)
 	_mesh_root.add_child(_leg_r)
-	_leg_r.add_child(_box(Vector3(0.14, 0.95, 0.14), Vector3(0, -0.47, 0), dark))
+	_leg_r.add_child(_capsule(0.1, 1.15, Vector3(0, -0.52, 0), skin))
+
+func _build_arm(pivot: Node3D, mat: Material) -> void:
+	pivot.add_child(_capsule(0.07, 1.45, Vector3(0, -0.68, 0), mat))   # long thin arm
+	for i in 3:                                                        # claw fingers
+		pivot.add_child(_capsule(0.018, 0.28, Vector3((i - 1) * 0.05, -1.5, 0.0), mat))
+
+func _capsule(radius: float, height: float, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var m := CapsuleMesh.new()
+	m.radius = radius
+	m.height = height
+	mi.mesh = m
+	mi.material_override = mat
+	mi.position = pos
+	return mi
 
 func _box(size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
