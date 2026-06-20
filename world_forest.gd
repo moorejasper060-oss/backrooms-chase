@@ -10,7 +10,9 @@ extends Node3D
 @export var cell_size := 3.0          # 40 * 3 = 120 m of forest
 @export var part_count := 5           # car parts to find
 @export var battery_count := 5        # flashlight batteries scattered
-@export var tree_count := 180         # scattered interior trees
+@export var tree_count := 300         # scattered interior trees (denser)
+@export var bush_count := 320         # ground-clutter bushes (decoration only)
+@export var log_count := 60           # fallen logs (decoration only)
 @export var forest_seed := 0          # 0 = random each run
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
@@ -70,7 +72,8 @@ func _ready() -> void:
 		_rng.randomize()
 	_setup_environment()
 	_make_ground()
-	_scatter_trees()        # M1 — stubbed until tree assets land
+	_scatter_trees()
+	_scatter_decoration()   # bushes + logs (visual only, after trees)
 	_build_passages()
 	_reachable = _reachable_from(_spawn_cell)
 	_place_player()
@@ -123,7 +126,7 @@ func _setup_environment() -> void:
 	moon.light_energy = 0.45
 	moon.rotation_degrees = Vector3(-58.0, 38.0, 0.0)
 	moon.shadow_enabled = true
-	moon.directional_shadow_max_distance = 70.0
+	moon.directional_shadow_max_distance = 45.0   # fog hides the far field; keeps shadow cost down with many trees
 	add_child(moon)
 
 func _make_ground() -> void:
@@ -143,38 +146,41 @@ func _scatter_trees() -> void:
 	var trunk_mat := StandardMaterial3D.new()
 	trunk_mat.albedo_color = Color(0.05, 0.04, 0.035)
 	trunk_mat.roughness = 1.0
-	var leaf_mat := StandardMaterial3D.new()
-	leaf_mat.albedo_color = Color(0.035, 0.055, 0.04)   # near-black pine in moonlight
-	leaf_mat.roughness = 1.0
+	var pine_mat := StandardMaterial3D.new()
+	pine_mat.albedo_color = Color(0.03, 0.05, 0.038)    # near-black pine
+	pine_mat.roughness = 1.0
+	var leafy_mat := StandardMaterial3D.new()
+	leafy_mat.albedo_color = Color(0.05, 0.07, 0.045)   # slightly greener broadleaf
+	leafy_mat.roughness = 1.0
 
-	# Dense border wall (keeps spawn corner itself clear of the ring).
+	# Dense impassable border wall (double ring for a solid edge you can't slip).
 	for x in cols:
 		for z in rows:
-			if x == 0 or x == cols - 1 or z == 0 or z == rows - 1:
-				_place_tree(Vector2i(x, z), trunk_mat, leaf_mat)
+			if x <= 1 or x >= cols - 2 or z <= 1 or z >= rows - 2:
+				_place_tree(Vector2i(x, z), trunk_mat, pine_mat, leafy_mat)
 
-	# Sparse interior trees
+	# Denser interior trees.
 	var placed := 0
 	var attempts := 0
 	while placed < tree_count and attempts < tree_count * 6:
 		attempts += 1
-		var cell := Vector2i(_rng.randi_range(1, cols - 2), _rng.randi_range(1, rows - 2))
+		var cell := Vector2i(_rng.randi_range(2, cols - 3), _rng.randi_range(2, rows - 3))
 		if _blocked.has(cell):
 			continue
 		if Vector2(cell.x - _spawn_cell.x, cell.y - _spawn_cell.y).length() < 4.0:
 			continue  # don't bury the player at spawn
-		_place_tree(cell, trunk_mat, leaf_mat)
+		_place_tree(cell, trunk_mat, pine_mat, leafy_mat)
 		placed += 1
 
-func _place_tree(cell: Vector2i, trunk_mat: Material, leaf_mat: Material) -> void:
+func _place_tree(cell: Vector2i, trunk_mat: Material, pine_mat: Material, leafy_mat: Material) -> void:
 	_block(cell)
 	var base := cell_to_world(cell)
 	var body := StaticBody3D.new()
-	body.position = Vector3(base.x + _rng.randf_range(-0.8, 0.8), 0.0, base.z + _rng.randf_range(-0.8, 0.8))
+	body.position = Vector3(base.x + _rng.randf_range(-0.9, 0.9), 0.0, base.z + _rng.randf_range(-0.9, 0.9))
 	body.rotation.y = _rng.randf_range(0.0, TAU)
 
-	var h := _rng.randf_range(4.5, 8.0)
-	var tr := _rng.randf_range(0.16, 0.30)
+	var h := _rng.randf_range(4.5, 8.5)
+	var tr := _rng.randf_range(0.16, 0.32)
 
 	var trunk := MeshInstance3D.new()
 	var cm := CylinderMesh.new()
@@ -186,17 +192,30 @@ func _place_tree(cell: Vector2i, trunk_mat: Material, leaf_mat: Material) -> voi
 	trunk.position = Vector3(0.0, h * 0.25, 0.0)
 	body.add_child(trunk)
 
-	# Pine canopy: three stacked cones (cylinder with top_radius 0).
-	for i in 3:
-		var cone := MeshInstance3D.new()
-		var con := CylinderMesh.new()
-		con.top_radius = 0.0
-		con.bottom_radius = (1.8 - i * 0.45) * (tr / 0.22)
-		con.height = h * 0.34
-		cone.mesh = con
-		cone.material_override = leaf_mat
-		cone.position = Vector3(0.0, h * 0.45 + i * h * 0.2, 0.0)
-		body.add_child(cone)
+	if _rng.randf() < 0.6:
+		# Pine: three stacked cones (cylinder with top_radius 0).
+		for i in 3:
+			var cone := MeshInstance3D.new()
+			var con := CylinderMesh.new()
+			con.top_radius = 0.0
+			con.bottom_radius = (1.8 - i * 0.45) * (tr / 0.22)
+			con.height = h * 0.34
+			cone.mesh = con
+			cone.material_override = pine_mat
+			cone.position = Vector3(0.0, h * 0.45 + i * h * 0.2, 0.0)
+			body.add_child(cone)
+	else:
+		# Broadleaf: a cluster of dark canopy blobs.
+		for i in 3:
+			var blob := MeshInstance3D.new()
+			var sm := SphereMesh.new()
+			var br := (1.4 - i * 0.25) * (tr / 0.22)
+			sm.radius = br
+			sm.height = br * 1.7
+			blob.mesh = sm
+			blob.material_override = leafy_mat
+			blob.position = Vector3(_rng.randf_range(-0.5, 0.5), h * 0.6 + i * h * 0.12, _rng.randf_range(-0.5, 0.5))
+			body.add_child(blob)
 
 	var col := CollisionShape3D.new()
 	var sh := CylinderShape3D.new()
@@ -206,6 +225,51 @@ func _place_tree(cell: Vector2i, trunk_mat: Material, leaf_mat: Material) -> voi
 	col.position = Vector3(0.0, h * 0.5, 0.0)
 	body.add_child(col)
 	add_child(body)
+
+## Pure-visual ground clutter for density — bushes + fallen logs. No collision
+## and no grid blocking, so they never trap the player or fragment pathfinding.
+func _scatter_decoration() -> void:
+	var bush_mat := StandardMaterial3D.new()
+	bush_mat.albedo_color = Color(0.04, 0.06, 0.04)
+	bush_mat.roughness = 1.0
+	var log_mat := StandardMaterial3D.new()
+	log_mat.albedo_color = Color(0.06, 0.045, 0.035)
+	log_mat.roughness = 1.0
+
+	var w := cols * cell_size
+	var d := rows * cell_size
+	for _i in bush_count:
+		_place_bush(Vector3(_rng.randf_range(2.0, w - 2.0), 0.0, _rng.randf_range(2.0, d - 2.0)), bush_mat)
+	for _i in log_count:
+		_place_log(Vector3(_rng.randf_range(3.0, w - 3.0), 0.0, _rng.randf_range(3.0, d - 3.0)), log_mat)
+
+func _place_bush(pos: Vector3, mat: Material) -> void:
+	var clumps := _rng.randi_range(1, 3)
+	for _i in clumps:
+		var mi := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		var r := _rng.randf_range(0.4, 0.95)
+		sm.radius = r
+		sm.height = r * 1.1
+		mi.mesh = sm
+		mi.material_override = mat
+		mi.position = pos + Vector3(_rng.randf_range(-0.6, 0.6), r * 0.45, _rng.randf_range(-0.6, 0.6))
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+
+func _place_log(pos: Vector3, mat: Material) -> void:
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	var r := _rng.randf_range(0.18, 0.3)
+	cm.top_radius = r
+	cm.bottom_radius = r
+	cm.height = _rng.randf_range(1.8, 3.4)
+	mi.mesh = cm
+	mi.material_override = mat
+	mi.position = pos + Vector3(0.0, r, 0.0)
+	mi.rotation = Vector3(0.0, _rng.randf_range(0.0, TAU), PI * 0.5)   # laid on its side
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
 
 func _block(cell: Vector2i) -> void:
 	if cell.x >= 0 and cell.x < cols and cell.y >= 0 and cell.y < rows:

@@ -286,17 +286,16 @@ func _build_body() -> void:
 	if sk:
 		_deform_skeleton(sk)
 
-	# Sickly grey flesh. Subsurface scatter makes the flashlight glow through it;
-	# rim lets the silhouette catch a little light so it reads as a shape in the
-	# dark, not a flat cut-out.
+	# Pitch-black shadow figure. Near-zero albedo so it's a void in the fog; a
+	# strong rim lets the edges catch a sliver of moonlight/flashlight so the
+	# silhouette still reads instead of vanishing entirely.
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.55, 0.5, 0.47)
-	mat.roughness = 0.6
+	mat.albedo_color = Color(0.02, 0.02, 0.025)
+	mat.roughness = 0.75
 	mat.metallic = 0.0
-	mat.subsurf_scatter_enabled = true
-	mat.subsurf_scatter_strength = 0.5
 	mat.rim_enabled = true
-	mat.rim = 0.3
+	mat.rim = 0.45
+	mat.rim_tint = 0.2
 	_recolor(_model, mat)
 
 	_anim = _find_anim_node(_model)
