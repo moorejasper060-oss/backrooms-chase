@@ -20,9 +20,19 @@ enum State { WANDER, CHASE }
 @onready var head: Node3D = $Head
 
 const ENTITY_PATH := "res://models/entity.glb"
-# Tuned against a rendered test shot: tall + gaunt, slightly narrowed.
-const ENTITY_SCALE := Vector3(0.92, 1.6, 0.92)
+# Tuned against rendered test shots: tall + thin, then bones lengthened below.
+const ENTITY_SCALE := Vector3(0.72, 1.45, 0.72)
 const ENTITY_YAW := PI   # CesiumMan's mesh faces +Z; flip it onto our -Z travel forward
+# Gangly deform — multiply each limb/neck bone's offset from its parent so the
+# skinned flesh stretches into long spindly danglers. Indices are CesiumMan's
+# (from the skeleton dump); verified to survive the walk clip (rotations only).
+const BONE_STRETCH := {
+	2: 1.7, 3: 1.8,    # R thigh, shin
+	6: 1.7, 7: 1.8,    # L thigh, shin
+	12: 2.1, 13: 2.2,  # R upper arm, forearm
+	15: 2.1, 16: 2.2,  # L upper arm, forearm
+	17: 1.9, 18: 1.9,  # neck
+}
 
 var active := true
 var world: Node          # the World node (maze graph + helpers)
@@ -271,17 +281,22 @@ func _build_body() -> void:
 	_model.scale = ENTITY_SCALE
 	_model.rotation.y = ENTITY_YAW
 
-	# Pale, clammy, wrong. Subsurface scatter makes the flashlight glow sickly
-	# through the flesh; rim lets the silhouette catch a little light so it reads
-	# as a shape in the dark, not a flat cut-out.
+	# Mangle the human skeleton into a gangly creature: long spindly limbs + neck.
+	var sk := _find_skel(_model)
+	if sk:
+		_deform_skeleton(sk)
+
+	# Sickly grey flesh. Subsurface scatter makes the flashlight glow through it;
+	# rim lets the silhouette catch a little light so it reads as a shape in the
+	# dark, not a flat cut-out.
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.69, 0.63, 0.58)
-	mat.roughness = 0.55
+	mat.albedo_color = Color(0.55, 0.5, 0.47)
+	mat.roughness = 0.6
 	mat.metallic = 0.0
 	mat.subsurf_scatter_enabled = true
-	mat.subsurf_scatter_strength = 0.40
+	mat.subsurf_scatter_strength = 0.5
 	mat.rim_enabled = true
-	mat.rim = 0.35
+	mat.rim = 0.3
 	_recolor(_model, mat)
 
 	_anim = _find_anim_node(_model)
@@ -309,6 +324,28 @@ func _find_anim_node(n: Node) -> AnimationPlayer:
 		if r:
 			return r
 	return null
+
+func _find_skel(n: Node) -> Skeleton3D:
+	if n is Skeleton3D:
+		return n
+	for c in n.get_children():
+		var r := _find_skel(c)
+		if r:
+			return r
+	return null
+
+## Lengthen limb + neck bones so the skinned flesh stretches into a gangly,
+## wrong-proportioned creature. Translation-only on the bone rest, so the walk
+## clip (which keys rotations) still swings the long limbs on top of it.
+func _deform_skeleton(sk: Skeleton3D) -> void:
+	for idx in BONE_STRETCH:
+		if idx >= sk.get_bone_count():
+			continue
+		var r := sk.get_bone_rest(idx)
+		r.origin *= float(BONE_STRETCH[idx])
+		sk.set_bone_rest(idx, r)
+		sk.reset_bone_pose(idx)
+	sk.force_update_all_bone_transforms()
 
 func _build_arm(pivot: Node3D, mat: Material) -> void:
 	pivot.add_child(_capsule(0.07, 1.45, Vector3(0, -0.68, 0), mat))   # long thin arm
