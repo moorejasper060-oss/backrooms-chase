@@ -147,14 +147,15 @@ func _setup_environment() -> void:
 func _make_materials() -> void:
 	# Real CC0 PBR texture sets (ambientCG), triplanar world-mapped so they tile
 	# seamlessly across every box regardless of size.
-	_mat_wall = _pbr_material("res://textures/wall_", false, Vector3(0.4, 0.4, 0.4))
+	_mat_wall = _pbr_material("res://textures/wall_", false, Vector3(0.3, 0.3, 0.3))
 	_mat_wall.albedo_color = Color(0.86, 0.72, 0.33)   # tint plaster -> backrooms yellow
 
-	_mat_floor = _pbr_material("res://textures/floor_", true, Vector3(0.45, 0.45, 0.45))
+	_mat_floor = _pbr_material("res://textures/floor_", false, Vector3(0.5, 0.5, 0.5))
+	_mat_floor.albedo_color = Color(0.55, 0.52, 0.46)  # muted grey-beige carpet, contrasts the yellow walls
 
-	_mat_ceiling = _pbr_material("res://textures/ceiling_", true, Vector3(0.4, 0.4, 0.4))
+	_mat_ceiling = _pbr_material("res://textures/ceiling_", true, Vector3(0.35, 0.35, 0.35))
 
-	_mat_pillar = _pbr_material("res://textures/wall_", false, Vector3(0.45, 0.45, 0.45))
+	_mat_pillar = _pbr_material("res://textures/wall_", false, Vector3(0.32, 0.32, 0.32))
 	_mat_pillar.albedo_color = Color(0.82, 0.70, 0.42)
 
 ## Builds a StandardMaterial3D from a CC0 set named `<prefix>color/normal/rough
@@ -168,7 +169,7 @@ func _pbr_material(prefix: String, has_ao: bool, uv_scale: Vector3) -> StandardM
 	if nrm:
 		m.normal_enabled = true
 		m.normal_texture = nrm
-		m.normal_scale = 1.0
+		m.normal_scale = 1.3
 	var rgh := _load_tex(prefix + "rough.jpg")
 	if rgh:
 		m.roughness_texture = rgh
