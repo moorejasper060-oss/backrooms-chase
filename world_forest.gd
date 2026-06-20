@@ -60,7 +60,7 @@ var _spot_cooldown := 0.0
 var _blocked := {}      # Vector2i -> true
 var passages := {}      # Vector2i -> Array[Vector2i]
 var _reachable := {}
-var _spawn_cell := Vector2i(3, 3)
+var _spawn_cell := Vector2i(5, 5)
 
 var _rng := RandomNumberGenerator.new()
 var _ground_mat: StandardMaterial3D
@@ -74,6 +74,7 @@ func _ready() -> void:
 	_make_ground()
 	_scatter_trees()
 	_scatter_decoration()   # bushes + logs (visual only, after trees)
+	_build_cabin()          # start landmark (blocks its footprint cells)
 	_build_passages()
 	_reachable = _reachable_from(_spawn_cell)
 	_place_player()
@@ -270,6 +271,68 @@ func _place_log(pos: Vector3, mat: Material) -> void:
 	mi.rotation = Vector3(0.0, _rng.randf_range(0.0, TAU), PI * 0.5)   # laid on its side
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
+
+## A dark wooden cabin behind the spawn — your starting landmark. Its door faces
+## the player (who spawns just outside it, looking into the woods). Footprint
+## cells are blocked so the entity pathfinds around it.
+func _build_cabin() -> void:
+	var spawn_world := cell_to_world(_spawn_cell)
+	var centre_world := cell_to_world(Vector2i(cols / 2, rows / 2))
+	var outward := spawn_world - centre_world
+	outward.y = 0.0
+	outward = outward.normalized() if outward.length() > 0.1 else Vector3(0, 0, -1)
+	var cabin_pos := spawn_world + outward * 5.5
+	cabin_pos.y = 0.0
+
+	var wood := StandardMaterial3D.new()
+	wood.albedo_color = Color(0.10, 0.08, 0.06)
+	wood.roughness = 1.0
+	var roof_mat := StandardMaterial3D.new()
+	roof_mat.albedo_color = Color(0.05, 0.045, 0.045)
+	roof_mat.roughness = 1.0
+
+	var cabin := StaticBody3D.new()
+	cabin.position = cabin_pos
+	cabin.rotation.y = atan2(-outward.x, -outward.z)   # front (+Z) faces the player
+	add_child(cabin)
+
+	var hw := 2.4   # half width (x)
+	var hd := 2.1   # half depth (z)
+	var wh := 2.6   # wall height
+	var t := 0.2
+	# Back wall + two side walls
+	_sbox(cabin, Vector3(hw * 2.0, wh, t), Vector3(0.0, wh * 0.5, -hd), wood)
+	_sbox(cabin, Vector3(t, wh, hd * 2.0), Vector3(-hw, wh * 0.5, 0.0), wood)
+	_sbox(cabin, Vector3(t, wh, hd * 2.0), Vector3(hw, wh * 0.5, 0.0), wood)
+	# Front wall with a doorway gap (1.2 wide)
+	var seg := (hw * 2.0 - 1.2) * 0.5
+	_sbox(cabin, Vector3(seg, wh, t), Vector3(-(0.6 + seg * 0.5), wh * 0.5, hd), wood)
+	_sbox(cabin, Vector3(seg, wh, t), Vector3(0.6 + seg * 0.5, wh * 0.5, hd), wood)
+	_sbox(cabin, Vector3(1.2, wh - 2.1, t), Vector3(0.0, wh - (wh - 2.1) * 0.5, hd), wood)  # lintel
+	# Flat overhanging roof
+	_sbox(cabin, Vector3(hw * 2.0 + 0.6, 0.2, hd * 2.0 + 0.6), Vector3(0.0, wh + 0.1, 0.0), roof_mat)
+
+	# Block the footprint for navigation
+	for x in cols:
+		for z in rows:
+			var wc := cell_to_world(Vector2i(x, z))
+			if Vector2(wc.x - cabin_pos.x, wc.z - cabin_pos.z).length() < 3.4:
+				_block(Vector2i(x, z))
+
+func _sbox(body: StaticBody3D, size: Vector3, pos: Vector3, mat: Material) -> void:
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	mi.mesh = bm
+	mi.material_override = mat
+	mi.position = pos
+	body.add_child(mi)
+	var col := CollisionShape3D.new()
+	var sh := BoxShape3D.new()
+	sh.size = size
+	col.shape = sh
+	col.position = pos
+	body.add_child(col)
 
 func _block(cell: Vector2i) -> void:
 	if cell.x >= 0 and cell.x < cols and cell.y >= 0 and cell.y < rows:

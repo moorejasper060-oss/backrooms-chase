@@ -40,6 +40,10 @@ func _build() -> void:
 		for sz in [-1.45, 1.45]:
 			_cyl(0.46, 0.32, Vector3(sx * 0.98, 0.46, sz), tire_mat, true)
 
+	# Bumpers front + rear
+	_box(Vector3(2.05, 0.3, 0.3), Vector3(0.0, 0.5, 2.25), body_mat)
+	_box(Vector3(2.05, 0.3, 0.3), Vector3(0.0, 0.5, -2.25), body_mat)
+
 	# Headlight lenses + lights (off until repaired)
 	_lens_mat = StandardMaterial3D.new()
 	_lens_mat.albedo_color = Color(0.7, 0.68, 0.5)
