@@ -3,13 +3,15 @@ extends Node3D
 ## fluorescent lights and thick fog. Also stores the maze graph so the
 ## monster can pathfind through it in a later milestone.
 
-@export var cols := 12
-@export var rows := 12
-@export var cell_size := 5.0
+@export var cols := 16
+@export var rows := 16
+@export var cell_size := 4.0
 @export var wall_height := 3.0
 @export var wall_thickness := 0.3
 @export var maze_seed := 0  # 0 = random each run
 @export var objective_count := 6
+@export var interior_wall_chance := 0.10  # sparse walls => open, room-like space
+@export var column_step := 2              # support-pillar grid spacing (in cells)
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
 const MONSTER_SCENE := preload("res://monster.tscn")
@@ -38,9 +40,10 @@ var _spot_cooldown := 0.0
 var _wall_v := []  # vertical walls, size (cols+1) x rows
 var _wall_h := []  # horizontal walls, size cols x (rows+1)
 
-# Cell adjacency graph (open passages) — used by the monster later.
+# Cell adjacency graph (open passages) — used by the monster for pathfinding.
 # Keyed by Vector2i(cell) -> Array[Vector2i] of reachable neighbours.
 var passages := {}
+var _reachable := {}  # cells reachable from the spawn (for valid spawns/pickups)
 
 var _rng := RandomNumberGenerator.new()
 
@@ -48,6 +51,7 @@ var _rng := RandomNumberGenerator.new()
 var _mat_wall: StandardMaterial3D
 var _mat_floor: StandardMaterial3D
 var _mat_ceiling: StandardMaterial3D
+var _mat_pillar: StandardMaterial3D
 
 func _ready() -> void:
 	if maze_seed != 0:
@@ -56,8 +60,10 @@ func _ready() -> void:
 		_rng.randomize()
 	_setup_environment()
 	_make_materials()
-	_generate_maze()
+	_generate_layout()
+	_reachable = _reachable_from(Vector2i(0, 0))
 	_build_geometry()
+	_add_columns()
 	_place_player()
 	_spawn_pickups()
 	_spawn_monster()
@@ -111,6 +117,13 @@ func _make_materials() -> void:
 	_mat_ceiling.uv1_world_triplanar = true
 	_mat_ceiling.uv1_scale = Vector3(0.5, 0.5, 0.5)
 	_mat_ceiling.roughness = 0.9
+
+	_mat_pillar = StandardMaterial3D.new()
+	_mat_pillar.albedo_texture = _make_wallpaper_texture()
+	_mat_pillar.uv1_triplanar = true
+	_mat_pillar.uv1_world_triplanar = true
+	_mat_pillar.uv1_scale = Vector3(0.6, 0.6, 0.6)
+	_mat_pillar.roughness = 0.9
 
 ## Dingy yellow wallpaper: subtle vertical pattern + water staining + grain.
 func _make_wallpaper_texture() -> ImageTexture:
@@ -172,63 +185,89 @@ func _place_player() -> void:
 		var dir := Vector3(n.x - start.x, 0.0, n.y - start.y)
 		player.look_at(spawn + dir, Vector3.UP)
 
-# --- Maze generation (recursive backtracker) --------------------------------
+# --- Open layout generation -------------------------------------------------
 
-func _generate_maze() -> void:
-	# Start with every wall present.
+## Mostly-open space: solid perimeter + a few sparse interior walls. Pillars
+## (added separately) supply the grid structure. Far more open than a maze,
+## and with no 1-wide corridors the monster doesn't snag on walls.
+func _generate_layout() -> void:
 	_wall_v = []
 	for x in cols + 1:
 		var col := []
 		for z in rows:
-			col.append(true)
+			col.append(false)
 		_wall_v.append(col)
 	_wall_h = []
 	for x in cols:
 		var col := []
 		for z in rows + 1:
-			col.append(true)
+			col.append(false)
 		_wall_h.append(col)
 
+	# Perimeter walls
+	for z in rows:
+		_wall_v[0][z] = true
+		_wall_v[cols][z] = true
+	for x in cols:
+		_wall_h[x][0] = true
+		_wall_h[x][rows] = true
+
+	# Sparse interior walls (partial dividers, not a maze)
+	for x in range(1, cols):
+		for z in rows:
+			if _rng.randf() < interior_wall_chance:
+				_wall_v[x][z] = true
+	for x in cols:
+		for z in range(1, rows):
+			if _rng.randf() < interior_wall_chance:
+				_wall_h[x][z] = true
+
+	# Keep the spawn corner clear so the player isn't boxed in
+	_wall_v[1][0] = false
+	_wall_h[0][1] = false
+
+	_build_passages()
+
+func _build_passages() -> void:
+	passages = {}
 	for x in cols:
 		for z in rows:
 			passages[Vector2i(x, z)] = []
+	for x in cols:
+		for z in rows:
+			var c := Vector2i(x, z)
+			if x + 1 < cols and not _wall_v[x + 1][z]:
+				passages[c].append(Vector2i(x + 1, z))
+			if x - 1 >= 0 and not _wall_v[x][z]:
+				passages[c].append(Vector2i(x - 1, z))
+			if z + 1 < rows and not _wall_h[x][z + 1]:
+				passages[c].append(Vector2i(x, z + 1))
+			if z - 1 >= 0 and not _wall_h[x][z]:
+				passages[c].append(Vector2i(x, z - 1))
 
-	var visited := {}
-	var stack: Array[Vector2i] = []
-	var start := Vector2i(0, 0)
-	visited[start] = true
-	stack.append(start)
-
+## Flood-fill of every cell reachable from `start` (so we never spawn pickups
+## or the monster in an accidentally-sealed pocket).
+func _reachable_from(start: Vector2i) -> Dictionary:
+	var seen := {start: true}
+	var stack: Array[Vector2i] = [start]
 	while not stack.is_empty():
-		var c: Vector2i = stack.back()
-		var neighbours := _unvisited_neighbours(c, visited)
-		if neighbours.is_empty():
-			stack.pop_back()
-		else:
-			var n: Vector2i = neighbours[_rng.randi_range(0, neighbours.size() - 1)]
-			_remove_wall_between(c, n)
-			passages[c].append(n)
-			passages[n].append(c)
-			visited[n] = true
-			stack.append(n)
+		var c: Vector2i = stack.pop_back()
+		for nb in passages.get(c, []):
+			if not seen.has(nb):
+				seen[nb] = true
+				stack.append(nb)
+	return seen
 
-func _unvisited_neighbours(c: Vector2i, visited: Dictionary) -> Array:
-	var result: Array[Vector2i] = []
-	for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
-		var n: Vector2i = c + d
-		if n.x >= 0 and n.x < cols and n.y >= 0 and n.y < rows and not visited.has(n):
-			result.append(n)
-	return result
-
-func _remove_wall_between(a: Vector2i, b: Vector2i) -> void:
-	if b.x > a.x:
-		_wall_v[b.x][a.y] = false
-	elif b.x < a.x:
-		_wall_v[a.x][a.y] = false
-	elif b.y > a.y:
-		_wall_h[a.x][b.y] = false
-	elif b.y < a.y:
-		_wall_h[a.x][a.y] = false
+## The reachable cell farthest from `from` (used to spawn the monster away).
+func _far_reachable_cell(from: Vector2i) -> Vector2i:
+	var best := from
+	var best_d := -1.0
+	for c in _reachable:
+		var d := Vector2(c.x - from.x, c.y - from.y).length()
+		if d > best_d:
+			best_d = d
+			best = c
+	return best
 
 # --- Geometry ---------------------------------------------------------------
 
@@ -253,6 +292,14 @@ func _build_geometry() -> void:
 			if _wall_h[x][z]:
 				var pos := Vector3(x * cell_size + cell_size * 0.5, wall_height * 0.5, z * cell_size)
 				_add_box(Vector3(cell_size, wall_height, wall_thickness), pos, _mat_wall)
+
+## Backrooms support columns on a regular grid (placed at cell corners so they
+## never sit on the cell-centre lines the monster walks along).
+func _add_columns() -> void:
+	for ix in range(column_step, cols, column_step):
+		for iz in range(column_step, rows, column_step):
+			var pos := Vector3(ix * cell_size, wall_height * 0.5, iz * cell_size)
+			_add_box(Vector3(0.7, wall_height, 0.7), pos, _mat_pillar)
 
 func _add_box(size: Vector3, pos: Vector3, mat: Material) -> void:
 	var body := StaticBody3D.new()
@@ -357,7 +404,7 @@ func _pick_cells(n: int, exclude: Vector2i) -> Array:
 	for x in cols:
 		for z in rows:
 			var c := Vector2i(x, z)
-			if c != exclude:
+			if c != exclude and _reachable.has(c):
 				all.append(c)
 	# Fisher-Yates shuffle with our seeded RNG
 	for i in range(all.size() - 1, 0, -1):
@@ -387,7 +434,7 @@ func _win() -> void:
 
 func _spawn_monster() -> void:
 	_monster = MONSTER_SCENE.instantiate()
-	var pos := cell_to_world(Vector2i(cols - 1, rows - 1))  # far corner
+	var pos := cell_to_world(_far_reachable_cell(Vector2i(0, 0)))
 	pos.y = 0.2
 	_monster.position = pos
 	_monster.caught.connect(_on_player_caught)

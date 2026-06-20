@@ -42,6 +42,12 @@ var _leg_l: Node3D
 var _leg_r: Node3D
 var _anim_t := 0.0
 
+# Anti-stuck
+var _last_pos := Vector3.ZERO
+var _stuck := 0.0
+var _unstick_timer := 0.0
+var _unstick_dir := Vector3.ZERO
+
 func _ready() -> void:
 	add_to_group("monster")
 	world = get_parent()
@@ -86,10 +92,35 @@ func _physics_process(delta: float) -> void:
 		_repath = 0.4
 		_recompute_path()
 
+	_detect_stuck(delta)
 	_follow_path()
 	move_and_slide()
 	_animate(delta)
 	_check_catch()
+
+## If it's pressed against a wall making no progress, slide it along the wall
+## for a moment (and force a repath) so it never wedges in a corner.
+func _detect_stuck(delta: float) -> void:
+	var moved := global_position.distance_to(_last_pos)
+	_last_pos = global_position
+	if _unstick_timer > 0.0:
+		_unstick_timer -= delta
+		return
+	var wants_move := _state == State.CHASE or not _path.is_empty()
+	if wants_move and is_on_wall() and moved < 0.02:
+		_stuck += delta
+		if _stuck > 0.3:
+			_stuck = 0.0
+			_unstick_timer = 0.45
+			var n := get_wall_normal()
+			var tangent := Vector3(-n.z, 0.0, n.x)
+			if randf() < 0.5:
+				tangent = -tangent
+			_unstick_dir = (tangent + n * 0.35).normalized()
+			_repath = 0.0
+			_wander_target = null
+	else:
+		_stuck = maxf(0.0, _stuck - delta)
 
 func _update_state(delta: float) -> void:
 	var dist := global_position.distance_to(player.global_position)
@@ -141,6 +172,12 @@ func _follow_path() -> void:
 		speed = chase_speed + minf(_chase_time * 0.1, 1.0)  # escalates gently the longer it hunts
 	if _lunge_timer > 0.0:
 		speed += lunge_bonus
+
+	# Breaking free of a wall: drive along the stored tangent for a moment.
+	if _unstick_timer > 0.0:
+		velocity.x = _unstick_dir.x * speed
+		velocity.z = _unstick_dir.z * speed
+		return
 
 	# When it can actually see the player, ditch the grid and home straight in
 	# on their real position — otherwise it would stall at the cell centre.
