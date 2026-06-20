@@ -34,6 +34,7 @@ func _ready() -> void:
 	_make_materials()
 	_generate_maze()
 	_build_geometry()
+	_place_player()
 	_add_lights()
 	_add_hud()
 
@@ -45,7 +46,7 @@ func _setup_environment() -> void:
 	env.background_color = Color(0.02, 0.02, 0.0)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.95, 0.88, 0.6)
-	env.ambient_light_energy = 0.35
+	env.ambient_light_energy = 0.5
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.09, 0.085, 0.05)
 	env.fog_density = 0.045
@@ -56,17 +57,88 @@ func _setup_environment() -> void:
 	add_child(we)
 
 func _make_materials() -> void:
+	# Triplanar (world-space) mapping gives consistent texel density on every
+	# box regardless of its size, and tiles seamlessly between adjacent walls.
 	_mat_wall = StandardMaterial3D.new()
-	_mat_wall.albedo_color = Color(0.83, 0.74, 0.42)  # dingy yellow wallpaper
+	_mat_wall.albedo_texture = _make_wallpaper_texture()
+	_mat_wall.uv1_triplanar = true
+	_mat_wall.uv1_world_triplanar = true
+	_mat_wall.uv1_scale = Vector3(0.45, 0.45, 0.45)
 	_mat_wall.roughness = 0.95
 
 	_mat_floor = StandardMaterial3D.new()
-	_mat_floor.albedo_color = Color(0.45, 0.40, 0.20)  # moist carpet
+	_mat_floor.albedo_texture = _make_carpet_texture()
+	_mat_floor.uv1_triplanar = true
+	_mat_floor.uv1_world_triplanar = true
+	_mat_floor.uv1_scale = Vector3(0.6, 0.6, 0.6)
 	_mat_floor.roughness = 1.0
 
 	_mat_ceiling = StandardMaterial3D.new()
-	_mat_ceiling.albedo_color = Color(0.78, 0.76, 0.68)  # ceiling tiles
+	_mat_ceiling.albedo_texture = _make_ceiling_texture()
+	_mat_ceiling.uv1_triplanar = true
+	_mat_ceiling.uv1_world_triplanar = true
+	_mat_ceiling.uv1_scale = Vector3(0.5, 0.5, 0.5)
 	_mat_ceiling.roughness = 0.9
+
+## Dingy yellow wallpaper: subtle vertical pattern + water staining + grain.
+func _make_wallpaper_texture() -> ImageTexture:
+	var s := 256
+	var img := Image.create_empty(s, s, false, Image.FORMAT_RGB8)
+	var base := Color(0.83, 0.74, 0.42)
+	for y in s:
+		for x in s:
+			var stripe := 0.05 * sin(float(x) / float(s) * TAU * 8.0)
+			var stain := maxf(0.0, 0.10 * sin(float(y) / float(s) * TAU * 1.5 + 1.3))
+			var grain := (randf() - 0.5) * 0.06
+			var f := 1.0 + stripe - stain + grain
+			img.set_pixel(x, y, Color(base.r * f, base.g * f, base.b * f))
+	return ImageTexture.create_from_image(img)
+
+## Damp, grainy carpet.
+func _make_carpet_texture() -> ImageTexture:
+	var s := 128
+	var img := Image.create_empty(s, s, false, Image.FORMAT_RGB8)
+	var base := Color(0.45, 0.40, 0.20)
+	for y in s:
+		for x in s:
+			var n := (randf() - 0.5) * 0.13
+			img.set_pixel(x, y, Color(
+				clampf(base.r + n, 0.0, 1.0),
+				clampf(base.g + n, 0.0, 1.0),
+				clampf(base.b + n, 0.0, 1.0)))
+	return ImageTexture.create_from_image(img)
+
+## Drop-ceiling tiles: a grid of darker seams over off-white panels.
+func _make_ceiling_texture() -> ImageTexture:
+	var s := 128
+	var img := Image.create_empty(s, s, false, Image.FORMAT_RGB8)
+	var base := Color(0.78, 0.76, 0.68)
+	var seam := base * 0.5
+	var half := s / 2
+	for y in s:
+		for x in s:
+			if (x % half) < 3 or (y % half) < 3:
+				img.set_pixel(x, y, seam)
+			else:
+				var n := (randf() - 0.5) * 0.05
+				img.set_pixel(x, y, Color(base.r + n, base.g + n, base.b + n))
+	return ImageTexture.create_from_image(img)
+
+## Drop the player into the start cell, facing down an open corridor so the
+## first thing they see is depth, not a wall in their face.
+func _place_player() -> void:
+	var player: Node3D = get_parent().get_node_or_null("Player")
+	if player == null:
+		return
+	var start := Vector2i(0, 0)
+	var spawn := cell_to_world(start)
+	spawn.y = 1.0
+	player.global_position = spawn
+	var open: Array = passages.get(start, [])
+	if not open.is_empty():
+		var n: Vector2i = open[0]
+		var dir := Vector3(n.x - start.x, 0.0, n.y - start.y)
+		player.look_at(spawn + dir, Vector3.UP)
 
 # --- Maze generation (recursive backtracker) --------------------------------
 
