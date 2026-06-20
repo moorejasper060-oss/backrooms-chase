@@ -32,6 +32,22 @@ var _ceiling_lights: Array[OmniLight3D] = []
 # Audio + cached player reference
 const AUDIO_SCRIPT := preload("res://audio.gd")
 const PAUSE_SCRIPT := preload("res://pause.gd")
+
+const POST_SHADER := "
+shader_type canvas_item;
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear, repeat_disable;
+uniform float grain = 0.05;
+uniform float vignette = 0.5;
+void fragment() {
+	vec3 col = texture(screen_tex, SCREEN_UV).rgb;
+	vec2 d = SCREEN_UV - 0.5;
+	float vig = smoothstep(0.85, 0.25, length(d));
+	col *= mix(1.0 - vignette, 1.0, vig);
+	float n = fract(sin(dot(SCREEN_UV + fract(TIME), vec2(12.9898, 78.233))) * 43758.5453);
+	col += (n - 0.5) * grain;
+	COLOR = vec4(col, 1.0);
+}
+"
 var _audio: Node
 var _player: Node3D
 var _spot_cooldown := 0.0
@@ -75,6 +91,23 @@ func _ready() -> void:
 	var pause := PAUSE_SCRIPT.new()
 	pause.world = self
 	add_child(pause)
+	_add_post_processing()
+
+## Full-screen film grain + vignette. Placed on a layer below the HUD so the
+## interface stays crisp.
+func _add_post_processing() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = -1
+	add_child(layer)
+	var rect := ColorRect.new()
+	rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var shader := Shader.new()
+	shader.code = POST_SHADER
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	rect.material = mat
+	layer.add_child(rect)
 
 # --- Atmosphere -------------------------------------------------------------
 
@@ -90,6 +123,19 @@ func _setup_environment() -> void:
 	env.fog_density = 0.045
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 
+	# Realism: contact shadows (SSAO), bloom on bright lights/eyes, a touch
+	# more contrast and saturation.
+	env.ssao_enabled = true
+	env.ssao_radius = 2.0
+	env.ssao_intensity = 2.0
+	env.glow_enabled = true
+	env.glow_intensity = 0.6
+	env.glow_strength = 1.1
+	env.glow_bloom = 0.1
+	env.adjustment_enabled = true
+	env.adjustment_contrast = 1.08
+	env.adjustment_saturation = 1.1
+
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -99,6 +145,9 @@ func _make_materials() -> void:
 	# box regardless of its size, and tiles seamlessly between adjacent walls.
 	_mat_wall = StandardMaterial3D.new()
 	_mat_wall.albedo_texture = _make_wallpaper_texture()
+	_mat_wall.normal_enabled = true
+	_mat_wall.normal_texture = _make_wall_normal()
+	_mat_wall.normal_scale = 0.6
 	_mat_wall.uv1_triplanar = true
 	_mat_wall.uv1_world_triplanar = true
 	_mat_wall.uv1_scale = Vector3(0.45, 0.45, 0.45)
@@ -106,6 +155,9 @@ func _make_materials() -> void:
 
 	_mat_floor = StandardMaterial3D.new()
 	_mat_floor.albedo_texture = _make_carpet_texture()
+	_mat_floor.normal_enabled = true
+	_mat_floor.normal_texture = _make_carpet_normal()
+	_mat_floor.normal_scale = 0.8
 	_mat_floor.uv1_triplanar = true
 	_mat_floor.uv1_world_triplanar = true
 	_mat_floor.uv1_scale = Vector3(0.6, 0.6, 0.6)
@@ -113,6 +165,9 @@ func _make_materials() -> void:
 
 	_mat_ceiling = StandardMaterial3D.new()
 	_mat_ceiling.albedo_texture = _make_ceiling_texture()
+	_mat_ceiling.normal_enabled = true
+	_mat_ceiling.normal_texture = _make_ceiling_normal()
+	_mat_ceiling.normal_scale = 0.7
 	_mat_ceiling.uv1_triplanar = true
 	_mat_ceiling.uv1_world_triplanar = true
 	_mat_ceiling.uv1_scale = Vector3(0.5, 0.5, 0.5)
@@ -168,6 +223,47 @@ func _make_ceiling_texture() -> ImageTexture:
 				var n := (randf() - 0.5) * 0.05
 				img.set_pixel(x, y, Color(base.r + n, base.g + n, base.b + n))
 	return ImageTexture.create_from_image(img)
+
+## Builds a tangent-space normal map from a height field (wrapping at edges).
+func _normal_from_heights(h: PackedFloat32Array, size: int, strength: float) -> ImageTexture:
+	var img := Image.create_empty(size, size, false, Image.FORMAT_RGB8)
+	for y in size:
+		for x in size:
+			var hl := h[y * size + (x - 1 + size) % size]
+			var hr := h[y * size + (x + 1) % size]
+			var hu := h[((y - 1 + size) % size) * size + x]
+			var hd := h[((y + 1) % size) * size + x]
+			var n := Vector3((hl - hr) * strength, (hu - hd) * strength, 1.0).normalized()
+			img.set_pixel(x, y, Color(n.x * 0.5 + 0.5, n.y * 0.5 + 0.5, n.z * 0.5 + 0.5))
+	return ImageTexture.create_from_image(img)
+
+func _make_wall_normal() -> ImageTexture:
+	var s := 256
+	var h := PackedFloat32Array()
+	h.resize(s * s)
+	for y in s:
+		for x in s:
+			h[y * s + x] = sin(float(x) / float(s) * TAU * 8.0) * 0.5 + randf() * 0.12
+	return _normal_from_heights(h, s, 2.0)
+
+func _make_carpet_normal() -> ImageTexture:
+	var s := 128
+	var h := PackedFloat32Array()
+	h.resize(s * s)
+	for y in s:
+		for x in s:
+			h[y * s + x] = randf()
+	return _normal_from_heights(h, s, 1.6)
+
+func _make_ceiling_normal() -> ImageTexture:
+	var s := 128
+	var half := s / 2
+	var h := PackedFloat32Array()
+	h.resize(s * s)
+	for y in s:
+		for x in s:
+			h[y * s + x] = -1.0 if ((x % half) < 3 or (y % half) < 3) else 0.0  # recessed seams
+	return _normal_from_heights(h, s, 1.5)
 
 ## Drop the player into the start cell, facing down an open corridor so the
 ## first thing they see is depth, not a wall in their face.
