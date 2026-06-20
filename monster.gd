@@ -27,6 +27,9 @@ var _path: Array[Vector2i] = []
 var _repath := 0.0
 var _lose := 0.0
 var _lunge_timer := 0.0
+var _chase_time := 0.0
+var _last_seen := Vector2i.ZERO
+var _has_seen := false
 var _wander_target = null  # Vector2i, or null when we need a new one
 
 # Animated body parts
@@ -59,6 +62,7 @@ func _physics_process(delta: float) -> void:
 
 	_update_state(delta)
 	_lunge_timer = maxf(0.0, _lunge_timer - delta)
+	_chase_time = (_chase_time + delta) if _state == State.CHASE else 0.0
 
 	_repath -= delta
 	if _repath <= 0.0:
@@ -73,6 +77,9 @@ func _physics_process(delta: float) -> void:
 func _update_state(delta: float) -> void:
 	var dist := global_position.distance_to(player.global_position)
 	var sees := dist <= sight_range and _can_see_player()
+	if sees:
+		_last_seen = world.world_to_cell(player.global_position)
+		_has_seen = true
 	if _state == State.CHASE:
 		if sees or dist <= hear_radius:
 			_lose = give_up_time
@@ -81,6 +88,7 @@ func _update_state(delta: float) -> void:
 			if _lose <= 0.0:
 				_state = State.WANDER
 				_wander_target = null
+				_has_seen = false
 				_path.clear()
 	else:
 		if sees or dist <= hear_radius:
@@ -93,15 +101,26 @@ func _recompute_path() -> void:
 	var my_cell: Vector2i = world.world_to_cell(global_position)
 	var target_cell: Vector2i
 	if _state == State.CHASE:
-		target_cell = world.world_to_cell(player.global_position)
+		if _can_see_player():
+			target_cell = world.world_to_cell(player.global_position)
+		elif _has_seen:
+			target_cell = _last_seen  # investigate where we last saw them
+		else:
+			target_cell = world.world_to_cell(player.global_position)
 	else:
 		if _wander_target == null or my_cell == _wander_target:
-			_wander_target = world.random_cell()
+			# Half the time, go lurk near an objective the player still needs.
+			_wander_target = world.random_pickup_cell() if randf() < 0.5 else world.random_cell()
 		target_cell = _wander_target
 	_path = world.find_path(my_cell, target_cell)
 
+func is_chasing() -> bool:
+	return _state == State.CHASE
+
 func _follow_path() -> void:
-	var speed := chase_speed if _state == State.CHASE else wander_speed
+	var speed := wander_speed
+	if _state == State.CHASE:
+		speed = chase_speed + minf(_chase_time * 0.15, 1.5)  # escalates the longer it hunts
 	if _lunge_timer > 0.0:
 		speed += lunge_bonus
 

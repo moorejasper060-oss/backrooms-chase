@@ -27,6 +27,11 @@ var _game_over := false
 # Flickering ceiling lights
 var _ceiling_lights: Array[OmniLight3D] = []
 
+# Audio + cached player reference
+const AUDIO_SCRIPT := preload("res://audio.gd")
+var _audio: Node
+var _player: Node3D
+
 # Maze edge data (true = a wall exists on that edge)
 var _wall_v := []  # vertical walls, size (cols+1) x rows
 var _wall_h := []  # horizontal walls, size cols x (rows+1)
@@ -56,6 +61,9 @@ func _ready() -> void:
 	_spawn_monster()
 	_add_lights()
 	_add_hud()
+	_player = get_parent().get_node_or_null("Player")
+	_audio = AUDIO_SCRIPT.new()
+	add_child(_audio)
 
 # --- Atmosphere -------------------------------------------------------------
 
@@ -280,11 +288,19 @@ func _add_lights() -> void:
 			_ceiling_lights.append(light)
 			add_child(light)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	# Cheap fluorescent stutter on the flickering tubes.
 	for l in _ceiling_lights:
 		if l.get_meta("flicker", false) and _rng.randf() < 0.07:
 			l.light_energy = 0.0 if _rng.randf() < 0.5 else l.get_meta("base", 0.4)
+	# Audio cues + proximity camera rumble
+	if _monster and _player and not _game_over:
+		var d := _monster.global_position.distance_to(_player.global_position)
+		var chasing: bool = _monster.is_chasing()
+		if _audio:
+			_audio.update(d, chasing, delta)
+		if chasing and d < 7.0 and _player.has_method("add_shake"):
+			_player.add_shake((7.0 - d) / 7.0 * 0.6 * delta)
 
 # --- HUD --------------------------------------------------------------------
 
@@ -348,6 +364,8 @@ func _pick_cells(n: int, exclude: Vector2i) -> Array:
 func _on_pickup_collected() -> void:
 	_found += 1
 	_update_objectives_hud()
+	if _audio:
+		_audio.play_blip()
 	if _found >= _total:
 		_win()
 
@@ -370,7 +388,30 @@ func _spawn_monster() -> void:
 	add_child(_monster)
 
 func _on_player_caught() -> void:
+	# Jumpscare: yank the monster right up to the player's face, then rattle
+	# the camera and flash red.
+	var p: Node3D = get_parent().get_node_or_null("Player")
+	if _monster and p:
+		var infront := p.global_position - p.global_transform.basis.z * 1.2
+		_monster.global_position = Vector3(infront.x, 0.0, infront.z)
+		_monster.look_at(Vector3(p.global_position.x, _monster.global_position.y, p.global_position.z), Vector3.UP)
+		if p.has_method("jumpscare"):
+			p.jumpscare(_monster.global_position)
+	_flash_red()
+	if _audio:
+		_audio.play_stinger()
 	_end_game("CAUGHT\n\nPress R to try again", Color(1.0, 0.3, 0.3), true)
+
+func _flash_red() -> void:
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	var rect := ColorRect.new()
+	rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	rect.color = Color(0.6, 0.0, 0.0, 0.65)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(rect)
+	var tw := create_tween()
+	tw.tween_property(rect, "color", Color(0.6, 0.0, 0.0, 0.0), 1.3)
 
 func _end_game(message: String, color: Color, freeze_player: bool) -> void:
 	if _game_over:
@@ -424,6 +465,15 @@ func find_path(start: Vector2i, goal: Vector2i) -> Array[Vector2i]:
 
 func random_cell() -> Vector2i:
 	return Vector2i(_rng.randi_range(0, cols - 1), _rng.randi_range(0, rows - 1))
+
+## A cell containing a remaining objective (so the monster can haunt them),
+## or a random cell if none are left.
+func random_pickup_cell() -> Vector2i:
+	var ps := get_tree().get_nodes_in_group("pickup")
+	if ps.is_empty():
+		return random_cell()
+	var p: Node3D = ps[_rng.randi_range(0, ps.size() - 1)]
+	return world_to_cell(p.global_position)
 
 # --- Helpers for later milestones (monster pathfinding, item spawns) --------
 

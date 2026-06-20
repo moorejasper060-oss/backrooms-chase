@@ -18,6 +18,7 @@ var _pitch := 0.0
 var battery := 100.0
 var flashlight_on := true
 var _bat_fill: ColorRect
+var _shake := 0.0
 
 func _ready() -> void:
 	add_to_group("player")
@@ -52,6 +53,10 @@ func _process(delta: float) -> void:
 		flashlight.visible = false
 	_update_hud()
 
+	# Camera shake (proximity rumble + catch jumpscare)
+	_shake = maxf(0.0, _shake - delta * 1.6)
+	camera.rotation = Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * (_shake * 0.06)
+
 func _physics_process(delta: float) -> void:
 	if not is_on_floor():
 		velocity.y -= gravity * delta
@@ -74,6 +79,18 @@ func _physics_process(delta: float) -> void:
 ## Called by a pickup when collected — recharges the flashlight.
 func collect_pickup() -> void:
 	battery = minf(100.0, battery + battery_per_pickup)
+
+func add_shake(amount: float) -> void:
+	_shake = minf(1.0, _shake + amount)
+
+## Snap to stare at the monster, then rattle the camera — the death jumpscare.
+func jumpscare(target_pos: Vector3) -> void:
+	var flat := Vector3(target_pos.x, global_position.y, target_pos.z)
+	if flat.distance_to(global_position) > 0.05:
+		look_at(flat, Vector3.UP)
+	_pitch = 0.15
+	head.rotation.x = _pitch
+	_shake = 1.0
 
 func _make_hud() -> void:
 	var layer := CanvasLayer.new()
