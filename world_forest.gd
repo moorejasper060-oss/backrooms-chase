@@ -11,8 +11,8 @@ extends Node3D
 @export var part_count := 5           # car parts to find
 @export var battery_count := 5        # flashlight batteries scattered
 @export var tree_count := 300         # scattered interior trees (denser)
-@export var bush_count := 320         # ground-clutter bushes (decoration only)
-@export var log_count := 60           # fallen logs (decoration only)
+@export var bush_count := 120         # primitive filler bushes (real ferns/logs added on top)
+@export var log_count := 0            # replaced by real Poly Haven fallen logs
 @export var forest_seed := 0          # 0 = random each run
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
@@ -91,7 +91,8 @@ func _ready() -> void:
 	_make_materials()
 	_make_ground()
 	_scatter_trees()
-	_scatter_decoration()   # bushes + logs (visual only, after trees)
+	_scatter_decoration()   # primitive filler bushes
+	_scatter_props()        # real CC0 rocks / logs / ferns / branches
 	_build_cabin()          # start landmark (blocks its footprint cells)
 	_build_passages()
 	_reachable = _reachable_from(_spawn_cell)
@@ -251,16 +252,19 @@ func _place_tree(cell: Vector2i, trunk_mat: Material, pine_mat: Material, leafy_
 	body.add_child(trunk)
 
 	if _rng.randf() < 0.6:
-		# Pine: three stacked cones (cylinder with top_radius 0).
-		for i in 3:
+		# Pine: stacked cones, jittered + size-varied so they don't read as a
+		# perfect geometric cone.
+		for i in 4:
 			var cone := MeshInstance3D.new()
 			var con := CylinderMesh.new()
 			con.top_radius = 0.0
-			con.bottom_radius = (1.8 - i * 0.45) * (tr / 0.22)
-			con.height = h * 0.34
+			con.bottom_radius = (1.9 - i * 0.38) * (tr / 0.22) * _rng.randf_range(0.82, 1.18)
+			con.height = h * 0.3
 			cone.mesh = con
 			cone.material_override = pine_mat
-			cone.position = Vector3(0.0, h * 0.45 + i * h * 0.2, 0.0)
+			var jit := 0.18 * (tr / 0.22)
+			cone.position = Vector3(_rng.randf_range(-jit, jit), h * 0.4 + i * h * 0.16, _rng.randf_range(-jit, jit))
+			cone.rotation = Vector3(_rng.randf_range(-0.1, 0.1), _rng.randf_range(0.0, TAU), _rng.randf_range(-0.1, 0.1))
 			cone.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			body.add_child(cone)
 	else:
@@ -330,6 +334,82 @@ func _place_log(pos: Vector3, mat: Material) -> void:
 	mi.rotation = Vector3(0.0, _rng.randf_range(0.0, TAU), PI * 0.5)   # laid on its side
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
+
+## Real CC0 Poly Haven props (loaded at runtime from models/): solid rocks that
+## block navigation, plus visual-only fallen logs, ferns and branches. Each is
+## loaded once into a template, then cheap duplicates are scattered.
+func _scatter_props() -> void:
+	var rocks := _templates(["boulder_01/boulder_01_1k.gltf", "rock_01/rock_01_1k.gltf"])
+	var logs := _templates(["dead_tree_trunk/dead_tree_trunk_1k.gltf", "dead_tree_trunk_02/dead_tree_trunk_02_1k.gltf"])
+	var ferns := _templates(["fern_02/fern_02_1k.gltf"])
+	var branches := _templates(["dry_branches_medium_01/dry_branches_medium_01_1k.gltf"])
+
+	# Rocks: solid obstacles → block the cell + a simple collider.
+	if not rocks.is_empty():
+		var placed := 0
+		var tries := 0
+		while placed < 16 and tries < 240:
+			tries += 1
+			var cell := Vector2i(_rng.randi_range(2, cols - 3), _rng.randi_range(2, rows - 3))
+			if _blocked.has(cell):
+				continue
+			if Vector2(cell.x - _spawn_cell.x, cell.y - _spawn_cell.y).length() < 4.0:
+				continue
+			_block(cell)
+			var base := cell_to_world(cell)
+			var body := StaticBody3D.new()
+			body.position = Vector3(base.x, 0.0, base.z)
+			body.rotation.y = _rng.randf_range(0.0, TAU)
+			var s := _rng.randf_range(0.7, 1.7)
+			var vis: Node3D = rocks[_rng.randi() % rocks.size()].duplicate()
+			vis.scale = Vector3(s, s, s)
+			_no_shadow(vis)
+			body.add_child(vis)
+			var col := CollisionShape3D.new()
+			var sh := SphereShape3D.new()
+			sh.radius = 0.8 * s
+			col.shape = sh
+			col.position = Vector3(0.0, 0.6 * s, 0.0)
+			body.add_child(col)
+			add_child(body)
+			placed += 1
+
+	# Visual-only ground clutter (no collision / no grid block).
+	_scatter_visual(logs, 18, 0.9, 1.5)
+	_scatter_visual(ferns, 55, 0.7, 1.6)
+	_scatter_visual(branches, 30, 0.8, 1.7)
+
+	for t in rocks + logs + ferns + branches:
+		t.free()   # templates done — duplicates own their own copies
+
+func _templates(paths: Array) -> Array:
+	var out := []
+	for p in paths:
+		var doc := GLTFDocument.new()
+		var st := GLTFState.new()
+		if doc.append_from_file("res://models/" + p, st) == OK:
+			out.append(doc.generate_scene(st))
+	return out
+
+func _scatter_visual(templates: Array, count: int, smin: float, smax: float) -> void:
+	if templates.is_empty():
+		return
+	var w := cols * cell_size
+	var d := rows * cell_size
+	for _i in count:
+		var inst: Node3D = templates[_rng.randi() % templates.size()].duplicate()
+		inst.position = Vector3(_rng.randf_range(2.0, w - 2.0), 0.0, _rng.randf_range(2.0, d - 2.0))
+		inst.rotation.y = _rng.randf_range(0.0, TAU)
+		var s := _rng.randf_range(smin, smax)
+		inst.scale = Vector3(s, s, s)
+		_no_shadow(inst)
+		add_child(inst)
+
+func _no_shadow(n: Node) -> void:
+	if n is GeometryInstance3D:
+		(n as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for c in n.get_children():
+		_no_shadow(c)
 
 ## A dark wooden cabin behind the spawn — your starting landmark. Its door faces
 ## the player (who spawns just outside it, looking into the woods). Footprint
