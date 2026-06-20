@@ -12,12 +12,17 @@ extends Node3D
 @export var objective_count := 6
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
+const MONSTER_SCENE := preload("res://monster.tscn")
 
 # Objective tracking
 var _found := 0
 var _total := 0
 var _obj_label: Label
 var _win_label: Label
+
+# Monster / end-game
+var _monster: Node3D
+var _game_over := false
 
 # Maze edge data (true = a wall exists on that edge)
 var _wall_v := []  # vertical walls, size (cols+1) x rows
@@ -45,6 +50,7 @@ func _ready() -> void:
 	_build_geometry()
 	_place_player()
 	_spawn_pickups()
+	_spawn_monster()
 	_add_lights()
 	_add_hud()
 
@@ -332,10 +338,74 @@ func _update_objectives_hud() -> void:
 		_obj_label.text = "Objectives found: %d / %d" % [_found, _total]
 
 func _win() -> void:
+	_end_game("ALL OBJECTIVES FOUND\nYou made it out... this time.\n\nPress R to play again",
+		Color(0.6, 1.0, 0.7), false)
+
+# --- Monster & end-game -----------------------------------------------------
+
+func _spawn_monster() -> void:
+	_monster = MONSTER_SCENE.instantiate()
+	var pos := cell_to_world(Vector2i(cols - 1, rows - 1))  # far corner
+	pos.y = 0.2
+	_monster.position = pos
+	_monster.caught.connect(_on_player_caught)
+	add_child(_monster)
+
+func _on_player_caught() -> void:
+	_end_game("CAUGHT\n\nPress R to try again", Color(1.0, 0.3, 0.3), true)
+
+func _end_game(message: String, color: Color, freeze_player: bool) -> void:
+	if _game_over:
+		return
+	_game_over = true
+	if _monster:
+		_monster.active = false
 	if _win_label:
-		_win_label.text = "ALL OBJECTIVES FOUND\nYou made it out... this time."
+		_win_label.text = message
+		_win_label.add_theme_color_override("font_color", color)
 		_win_label.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if freeze_player:
+		var p: Node = get_parent().get_node_or_null("Player")
+		if p:
+			p.set_physics_process(false)
+			p.set_process_unhandled_input(false)
+
+func _unhandled_input(event: InputEvent) -> void:
+	if _game_over and (event.is_action_pressed("ui_accept") \
+			or (event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R)):
+		get_tree().reload_current_scene()
+
+# --- Pathfinding helpers (used by the monster) ------------------------------
+
+## Breadth-first search over the maze graph. Returns the list of cells to walk
+## (excluding the start cell), or an empty array if already there / unreachable.
+func find_path(start: Vector2i, goal: Vector2i) -> Array[Vector2i]:
+	if start == goal:
+		return []
+	var frontier: Array[Vector2i] = [start]
+	var came_from := {start: start}
+	var i := 0
+	while i < frontier.size():
+		var cur: Vector2i = frontier[i]
+		i += 1
+		if cur == goal:
+			break
+		for nb in passages.get(cur, []):
+			if not came_from.has(nb):
+				came_from[nb] = cur
+				frontier.append(nb)
+	if not came_from.has(goal):
+		return []
+	var path: Array[Vector2i] = []
+	var c: Vector2i = goal
+	while c != start:
+		path.push_front(c)
+		c = came_from[c]
+	return path
+
+func random_cell() -> Vector2i:
+	return Vector2i(_rng.randi_range(0, cols - 1), _rng.randi_range(0, rows - 1))
 
 # --- Helpers for later milestones (monster pathfinding, item spawns) --------
 
@@ -343,4 +413,6 @@ func cell_to_world(cell: Vector2i) -> Vector3:
 	return Vector3(cell.x * cell_size + cell_size * 0.5, 0.0, cell.y * cell_size + cell_size * 0.5)
 
 func world_to_cell(p: Vector3) -> Vector2i:
-	return Vector2i(int(p.x / cell_size), int(p.z / cell_size))
+	return Vector2i(
+		clampi(int(p.x / cell_size), 0, cols - 1),
+		clampi(int(p.z / cell_size), 0, rows - 1))

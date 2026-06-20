@@ -1,0 +1,43 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://monster.gd" id="1_monster"]
+
+[sub_resource type="CapsuleShape3D" id="col"]
+radius = 0.4
+height = 2.0
+
+[sub_resource type="CapsuleMesh" id="bodymesh"]
+radius = 0.4
+height = 2.0
+
+[sub_resource type="SphereMesh" id="eyemesh"]
+radius = 0.07
+height = 0.14
+
+[node name="Monster" type="CharacterBody3D"]
+script = ExtResource("1_monster")
+
+[node name="Body" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+mesh = SubResource("bodymesh")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+shape = SubResource("col")
+
+[node name="Head" type="Marker3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.7, 0)
+
+[node name="EyeL" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.13, 1.62, -0.36)
+mesh = SubResource("eyemesh")
+
+[node name="EyeR" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.13, 1.62, -0.36)
+mesh = SubResource("eyemesh")
+
+[node name="Light" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
+light_energy = 0.8
+omni_range = 6.0
+shadow_enabled = false
