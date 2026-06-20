@@ -8,13 +8,13 @@ signal spotted   # emitted the moment it locks onto the player
 enum State { WANDER, CHASE }
 
 @export var wander_speed := 2.5
-@export var chase_speed := 5.5
+@export var chase_speed := 4.0   # Normal = the player's walk speed (sprint escapes)
 @export var sight_range := 24.0
 @export var hear_radius := 5.0
 @export var give_up_time := 6.0
 @export var catch_distance := 1.6
 @export var gravity := 18.0
-@export var lunge_bonus := 1.6   # brief speed burst the moment it spots you
+@export var lunge_bonus := 1.2   # brief speed burst the moment it spots you
 @export var lunge_time := 1.0
 
 @onready var head: Node3D = $Head
@@ -50,18 +50,18 @@ func _ready() -> void:
 
 func _apply_difficulty() -> void:
 	match Settings.difficulty:
-		0:  # Easy
-			chase_speed = 4.8
+		0:  # Easy — slower than your walk
+			chase_speed = 3.2
 			sight_range = 18.0
 			hear_radius = 4.0
 			give_up_time = 4.0
-		2:  # Hard
-			chase_speed = 6.3
+		2:  # Hard — faster than your walk, relentless
+			chase_speed = 5.6
 			sight_range = 30.0
 			hear_radius = 6.0
 			give_up_time = 9.0
 		_:
-			pass  # Normal keeps the exported defaults
+			pass  # Normal keeps the exported defaults (4.0 = walk speed)
 
 func _physics_process(delta: float) -> void:
 	if not active:
@@ -138,7 +138,7 @@ func is_chasing() -> bool:
 func _follow_path() -> void:
 	var speed := wander_speed
 	if _state == State.CHASE:
-		speed = chase_speed + minf(_chase_time * 0.15, 1.5)  # escalates the longer it hunts
+		speed = chase_speed + minf(_chase_time * 0.1, 1.0)  # escalates gently the longer it hunts
 	if _lunge_timer > 0.0:
 		speed += lunge_bonus
 
