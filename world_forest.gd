@@ -10,7 +10,7 @@ extends Node3D
 @export var cell_size := 3.0          # 40 * 3 = 120 m of forest
 @export var part_count := 5           # car parts to find
 @export var battery_count := 3        # flashlight batteries scattered (fewer items)
-@export var tree_count := 480         # scattered interior trees (MultiMesh — cheap to go dense)
+@export var tree_count := 850         # dense interior trees (cheap billboards — make it a FOREST)
 @export var bush_count := 120         # primitive filler bushes (real ferns/logs added on top)
 @export var log_count := 0            # replaced by real Poly Haven fallen logs
 @export var forest_seed := 0          # 0 = random each run
@@ -53,6 +53,23 @@ void fragment() {
 }
 "
 
+const SKY_SHADER := "
+shader_type sky;
+uniform vec3 moon_dir;
+void sky() {
+	vec3 d = normalize(EYEDIR);
+	float up = clamp(d.y, 0.0, 1.0);
+	vec3 col = mix(vec3(0.02, 0.03, 0.055), vec3(0.0, 0.006, 0.02), up);
+	float md = dot(d, normalize(moon_dir));
+	col += vec3(0.9, 0.93, 1.0) * smoothstep(0.9965, 0.9978, md);    // moon disc
+	col += vec3(0.35, 0.45, 0.7) * smoothstep(0.95, 1.0, md) * 0.6;  // soft halo
+	vec2 g = floor((d.xz / max(abs(d.y), 0.2)) * 30.0);
+	float h = fract(sin(dot(g, vec2(12.9898, 78.233))) * 43758.5453);
+	col += vec3(0.7) * step(0.9975, h) * up;                         // sparse stars
+	COLOR = col;
+}
+"
+
 # Objective tracking
 var _found := 0
 var _total := 0
@@ -78,6 +95,8 @@ var _reachable := {}
 var _spawn_cell := Vector2i(5, 5)
 
 var _rng := RandomNumberGenerator.new()
+var _noise := FastNoiseLite.new()
+const GROUND_AMP := 2.4   # terrain hill height (± metres)
 var _mat_ground: StandardMaterial3D
 var _mat_bark: StandardMaterial3D
 var _mat_cabin: StandardMaterial3D
@@ -88,6 +107,9 @@ func _ready() -> void:
 		_rng.seed = forest_seed
 	else:
 		_rng.randomize()
+	_noise.seed = _rng.randi()
+	_noise.frequency = 0.012
+	_noise.fractal_octaves = 3
 	_setup_environment()
 	_make_materials()
 	_make_ground()
@@ -115,23 +137,21 @@ func _ready() -> void:
 
 func _setup_environment() -> void:
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.012, 0.016, 0.025)        # near-black blue night
+	env.background_mode = Environment.BG_SKY
+	env.background_color = Color(0.005, 0.007, 0.013)        # (unused with BG_SKY)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.3, 0.38, 0.55)         # cold moonlit ambient
-	env.ambient_light_energy = 0.06
-	# Thick fog — sight collapses to ~12 m so the entity looms out of nowhere.
+	env.ambient_light_energy = 0.022                          # darker — lean on the flashlight
+	# Lighter fog so the forest is visible, but the night is darker overall.
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.05, 0.07, 0.11)
-	env.fog_density = 0.085
-	env.fog_sky_affect = 1.0
-	# Volumetric fog: real ground mist the entity emerges from, and god-rays in
-	# the flashlight beam. Modest density to stay cheap.
+	env.fog_light_color = Color(0.035, 0.05, 0.08)
+	env.fog_density = 0.04
+	env.fog_sky_affect = 0.25                                 # keep the sky/moon visible above the fog
 	env.volumetric_fog_enabled = true
-	env.volumetric_fog_density = 0.035
-	env.volumetric_fog_albedo = Color(0.55, 0.65, 0.85)
-	env.volumetric_fog_emission = Color(0.015, 0.02, 0.035)
-	env.volumetric_fog_length = 32.0          # shorter volume = cheaper; fog hides the far field anyway
+	env.volumetric_fog_density = 0.016
+	env.volumetric_fog_albedo = Color(0.5, 0.6, 0.8)
+	env.volumetric_fog_emission = Color(0.007, 0.01, 0.018)
+	env.volumetric_fog_length = 40.0
 	env.volumetric_fog_detail_spread = 2.0
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.ssao_enabled = true
@@ -151,12 +171,23 @@ func _setup_environment() -> void:
 
 	# The moon — a dim, cold directional light raking across the canopy.
 	var moon := DirectionalLight3D.new()
-	moon.light_color = Color(0.55, 0.65, 0.95)
-	moon.light_energy = 0.45
-	moon.rotation_degrees = Vector3(-58.0, 38.0, 0.0)
+	moon.light_color = Color(0.5, 0.6, 0.92)
+	moon.light_energy = 0.32
+	moon.rotation_degrees = Vector3(-48.0, 38.0, 0.0)
 	moon.shadow_enabled = true
-	moon.directional_shadow_max_distance = 45.0   # fog hides the far field; keeps shadow cost down with many trees
+	moon.directional_shadow_max_distance = 50.0
 	add_child(moon)
+
+	# Night sky with a real moon + halo + stars, drawn in the sky shader so the
+	# distance fog can't erase it; aligned with the moonlight direction.
+	var sky := Sky.new()
+	var sky_mat := ShaderMaterial.new()
+	var sky_shader := Shader.new()
+	sky_shader.code = SKY_SHADER
+	sky_mat.shader = sky_shader
+	sky_mat.set_shader_parameter("moon_dir", moon.transform.basis.z)
+	sky.sky_material = sky_mat
+	env.sky = sky
 
 ## Real CC0 PBR textures (Poly Haven), triplanar world-mapped so they tile over
 ## any surface. Loaded at runtime from textures/ via Image.load (no import step).
@@ -195,10 +226,43 @@ func _load_tex(path: String) -> ImageTexture:
 	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
 
+## Terrain height at a world xz — gentle rolling hills, flattened around the
+## spawn/cabin clearing so the start area isn't on a slope. Used to build the
+## ground mesh AND to seat every spawned object on it.
+func _ground_height(x: float, z: float) -> float:
+	var h := _noise.get_noise_2d(x, z) * GROUND_AMP
+	var sw := cell_to_world(_spawn_cell)
+	var flat := clampf((Vector2(x - sw.x, z - sw.z).length() - 6.0) / 11.0, 0.0, 1.0)
+	return h * flat
+
+## Undulating 3D heightmap ground (real terrain, not a flat plane), triplanar-
+## textured, with a trimesh collider the player/monster walk on.
 func _make_ground() -> void:
 	var w := cols * cell_size
 	var d := rows * cell_size
-	_add_box(Vector3(w + 20.0, 0.4, d + 20.0), Vector3(w * 0.5, -0.2, d * 0.5), _mat_ground)
+	var res := 2.0
+	var nx := int(w / res)
+	var nz := int(d / res)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for iz in nz:
+		for ix in nx:
+			var x0 := ix * res
+			var x1 := (ix + 1) * res
+			var z0 := iz * res
+			var z1 := (iz + 1) * res
+			var p00 := Vector3(x0, _ground_height(x0, z0), z0)
+			var p10 := Vector3(x1, _ground_height(x1, z0), z0)
+			var p01 := Vector3(x0, _ground_height(x0, z1), z1)
+			var p11 := Vector3(x1, _ground_height(x1, z1), z1)
+			st.add_vertex(p00); st.add_vertex(p01); st.add_vertex(p11)
+			st.add_vertex(p00); st.add_vertex(p11); st.add_vertex(p10)
+	st.generate_normals()
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = _mat_ground
+	add_child(mi)
+	mi.create_trimesh_collision()
 
 # --- Forest generation ------------------------------------------------------
 
@@ -206,44 +270,47 @@ func _make_ground() -> void:
 ## the woods, then sparse interior trees. Each blocks its grid cell so the
 ## monster pathfinds around the trunks; the player/monster physically collide.
 func _scatter_trees() -> void:
-	var pine_xforms := []
-	var leaf_xforms := []
+	var xforms := []
 	var colliders := []
 
-	# Dense impassable border wall (2-cell-thick), all conifers.
+	# Dense impassable border wall (2-cell-thick) — these DO block nav so you
+	# can't wander out of the woods.
 	for x in cols:
 		for z in rows:
 			if x <= 1 or x >= cols - 2 or z <= 1 or z >= rows - 2:
-				_add_tree_xform(Vector2i(x, z), pine_xforms, colliders)
+				var c := cell_to_world(Vector2i(x, z))
+				_block(Vector2i(x, z))
+				_add_tree_at(c.x + _rng.randf_range(-1.0, 1.0), c.z + _rng.randf_range(-1.0, 1.0), xforms, colliders)
 
-	# Denser interior, mixed conifer / broadleaf.
+	# Dense interior trees at continuous positions. They do NOT block nav cells,
+	# so the grid stays open (monster/player thread between trunks) and the forest
+	# can be genuinely dense without fragmenting pathfinding — thin trunk colliders
+	# handle physical collision.
+	var w := cols * cell_size
+	var d := rows * cell_size
+	var sw := cell_to_world(_spawn_cell)
 	var placed := 0
 	var attempts := 0
-	while placed < tree_count and attempts < tree_count * 6:
+	while placed < tree_count and attempts < tree_count * 4:
 		attempts += 1
-		var cell := Vector2i(_rng.randi_range(2, cols - 3), _rng.randi_range(2, rows - 3))
-		if _blocked.has(cell):
-			continue
-		if Vector2(cell.x - _spawn_cell.x, cell.y - _spawn_cell.y).length() < 4.0:
-			continue  # don't bury the player at spawn
-		_add_tree_xform(cell, pine_xforms if _rng.randf() < 0.65 else leaf_xforms, colliders)
+		var x := _rng.randf_range(7.0, w - 7.0)
+		var z := _rng.randf_range(7.0, d - 7.0)
+		if Vector2(x - sw.x, z - sw.z).length() < 9.0:
+			continue  # keep the spawn/cabin clearing open
+		_add_tree_at(x, z, xforms, colliders)
 		placed += 1
 
 	# Whole forest as GPU-instanced real-tree billboards (~one draw call).
-	_make_multimesh(_build_impostor_tree_mesh(), pine_xforms + leaf_xforms)
+	_make_multimesh(_build_impostor_tree_mesh(), xforms)
+	for pos in colliders:
+		_tree_collider(pos)
 
-	# Collision-only cylinders (the MultiMesh is the visual).
-	for c in colliders:
-		_tree_collider(c[0], c[1])
-
-func _add_tree_xform(cell: Vector2i, arr: Array, colliders: Array) -> void:
-	_block(cell)
-	var base := cell_to_world(cell)
-	var pos := Vector3(base.x + _rng.randf_range(-0.9, 0.9), 0.0, base.z + _rng.randf_range(-0.9, 0.9))
-	var s := _rng.randf_range(1.4, 2.4)
+func _add_tree_at(x: float, z: float, xforms: Array, colliders: Array) -> void:
+	var pos := Vector3(x, _ground_height(x, z), z)
+	var s := _rng.randf_range(1.5, 2.6)
 	var yaw := _rng.randf_range(0.0, TAU)
-	arr.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s)), pos))
-	colliders.append([pos, s])
+	xforms.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s)), pos))
+	colliders.append(pos)
 
 func _make_multimesh(mesh: Mesh, xforms: Array) -> void:
 	if xforms.is_empty():
@@ -259,15 +326,15 @@ func _make_multimesh(mesh: Mesh, xforms: Array) -> void:
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mmi)
 
-func _tree_collider(pos: Vector3, s: float) -> void:
+func _tree_collider(pos: Vector3) -> void:
 	var body := StaticBody3D.new()
 	body.position = pos
 	var col := CollisionShape3D.new()
 	var sh := CylinderShape3D.new()
 	sh.radius = 0.5            # thin trunk collider regardless of canopy scale
-	sh.height = 5.0
+	sh.height = 6.0
 	col.shape = sh
-	col.position = Vector3(0.0, 2.5, 0.0)
+	col.position = Vector3(0.0, 3.0, 0.0)
 	body.add_child(col)
 	add_child(body)
 
@@ -375,7 +442,9 @@ func _scatter_decoration() -> void:
 	var w := cols * cell_size
 	var d := rows * cell_size
 	for _i in bush_count:
-		_place_bush(Vector3(_rng.randf_range(2.0, w - 2.0), 0.0, _rng.randf_range(2.0, d - 2.0)), bush_mat)
+		var bx := _rng.randf_range(2.0, w - 2.0)
+		var bz := _rng.randf_range(2.0, d - 2.0)
+		_place_bush(Vector3(bx, _ground_height(bx, bz), bz), bush_mat)
 	for _i in log_count:
 		_place_log(Vector3(_rng.randf_range(3.0, w - 3.0), 0.0, _rng.randf_range(3.0, d - 3.0)), log_mat)
 
@@ -430,7 +499,7 @@ func _scatter_props() -> void:
 			_block(cell)
 			var base := cell_to_world(cell)
 			var body := StaticBody3D.new()
-			body.position = Vector3(base.x, 0.0, base.z)
+			body.position = Vector3(base.x, _ground_height(base.x, base.z), base.z)
 			body.rotation.y = _rng.randf_range(0.0, TAU)
 			var s := _rng.randf_range(0.7, 1.7)
 			var vis: Node3D = rocks[_rng.randi() % rocks.size()].duplicate()
@@ -470,7 +539,9 @@ func _scatter_visual(templates: Array, count: int, smin: float, smax: float) -> 
 	var d := rows * cell_size
 	for _i in count:
 		var inst: Node3D = templates[_rng.randi() % templates.size()].duplicate()
-		inst.position = Vector3(_rng.randf_range(2.0, w - 2.0), 0.0, _rng.randf_range(2.0, d - 2.0))
+		var px := _rng.randf_range(2.0, w - 2.0)
+		var pz := _rng.randf_range(2.0, d - 2.0)
+		inst.position = Vector3(px, _ground_height(px, pz), pz)
 		inst.rotation.y = _rng.randf_range(0.0, TAU)
 		var s := _rng.randf_range(smin, smax)
 		inst.scale = Vector3(s, s, s)
@@ -493,7 +564,7 @@ func _build_cabin() -> void:
 	outward.y = 0.0
 	outward = outward.normalized() if outward.length() > 0.1 else Vector3(0, 0, -1)
 	var cabin_pos := spawn_world + outward * 5.5
-	cabin_pos.y = 0.0
+	cabin_pos.y = _ground_height(cabin_pos.x, cabin_pos.z)
 
 	var wood: Material = _mat_cabin   # real wood-plank PBR
 	var roof_mat := StandardMaterial3D.new()
@@ -615,11 +686,11 @@ func _place_player() -> void:
 	if player == null:
 		return
 	var spawn := cell_to_world(_spawn_cell)
-	spawn.y = 1.0
+	spawn.y = _ground_height(spawn.x, spawn.z) + 1.0
 	player.global_position = spawn
 	# Face into the woods (toward the map centre).
 	var centre := cell_to_world(Vector2i(cols / 2, rows / 2))
-	player.look_at(Vector3(centre.x, 1.0, centre.z), Vector3.UP)
+	player.look_at(Vector3(centre.x, spawn.y, centre.z), Vector3.UP)
 
 func _spawn_parts() -> void:
 	var cells := _pick_cells(part_count, _spawn_cell)
@@ -633,7 +704,7 @@ func _spawn_parts() -> void:
 		part.part_name = PART_NAMES[i % PART_NAMES.size()]
 		part.glow_color = Color(1.0, 0.55, 0.2) # warm amber so parts read apart from batteries
 		var pos := cell_to_world(cells[i])
-		pos.y = 1.1
+		pos.y = _ground_height(pos.x, pos.z) + 1.1
 		part.position = pos
 		add_child(part)
 
@@ -645,7 +716,7 @@ func _spawn_batteries() -> void:
 		bat.counts_as_objective = false
 		bat.glow_color = Color(0.4, 0.85, 1.0) # cold blue battery cans
 		var pos := cell_to_world(cell)
-		pos.y = 1.0
+		pos.y = _ground_height(pos.x, pos.z) + 1.0
 		bat.position = pos
 		add_child(bat)
 
@@ -664,7 +735,7 @@ func _pick_cells(n: int, exclude: Vector2i) -> Array:
 func _spawn_monster() -> void:
 	_monster = MONSTER_SCENE.instantiate()
 	var pos := cell_to_world(_random_reachable_far(_spawn_cell, cols * 0.45))
-	pos.y = 0.0
+	pos.y = _ground_height(pos.x, pos.z) + 0.5
 	_monster.position = pos
 	_monster.caught.connect(_on_player_caught)
 	_monster.spotted.connect(_on_spotted)
@@ -680,7 +751,7 @@ func _spawn_monster() -> void:
 func _spawn_car() -> void:
 	_car = CAR_SCRIPT.new()
 	var pos := cell_to_world(_far_reachable_cell(_spawn_cell))
-	pos.y = 0.0
+	pos.y = _ground_height(pos.x, pos.z)
 	_car.position = pos
 	_car.escaped.connect(_on_escaped)
 	_car.part_installed.connect(_on_part_installed)
