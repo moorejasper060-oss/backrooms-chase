@@ -166,6 +166,17 @@ func _recompute_path() -> void:
 func is_chasing() -> bool:
 	return _state == State.CHASE
 
+## Endgame rage: once the exit opens it always knows where you are and is a
+## touch faster — the final dash has to be earned.
+func enrage() -> void:
+	sight_range = 100000.0
+	hear_radius = 100000.0
+	give_up_time = 100000.0
+	chase_speed += 0.6
+	_state = State.CHASE
+	_lose = give_up_time
+	_lunge_timer = lunge_time
+
 func _follow_path() -> void:
 	var speed := wander_speed
 	if _state == State.CHASE:

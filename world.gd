@@ -15,6 +15,7 @@ extends Node3D
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
 const MONSTER_SCENE := preload("res://monster.tscn")
+const EXIT_SCENE := preload("res://exit.tscn")
 
 # Objective tracking
 var _found := 0
@@ -25,6 +26,8 @@ var _win_label: Label
 # Monster / end-game
 var _monster: Node3D
 var _game_over := false
+var _exit: Node3D
+var _exit_active := false
 
 # Flickering ceiling lights
 var _ceiling_lights: Array[OmniLight3D] = []
@@ -83,6 +86,7 @@ func _ready() -> void:
 	_place_player()
 	_spawn_pickups()
 	_spawn_monster()
+	_spawn_exit()
 	_add_lights()
 	_add_hud()
 	_player = get_parent().get_node_or_null("Player")
@@ -449,6 +453,11 @@ func _process(delta: float) -> void:
 		if chasing and d < 7.0 and _player.has_method("add_shake"):
 			_player.add_shake((7.0 - d) / 7.0 * 0.6 * delta)
 
+	# Once the exit is live, the objective HUD becomes a distance guide.
+	if _exit_active and _exit and _player and _obj_label and not _game_over:
+		var ed := _player.global_position.distance_to(_exit.global_position)
+		_obj_label.text = "REACH THE EXIT  —  %dm" % int(ed)
+
 # --- HUD --------------------------------------------------------------------
 
 func _add_hud() -> void:
@@ -513,27 +522,57 @@ func _on_pickup_collected() -> void:
 	_update_objectives_hud()
 	if _audio:
 		_audio.play_blip()
-	if _found >= _total:
-		_win()
+	if _found >= _total and not _exit_active:
+		_open_exit()
 
 func _update_objectives_hud() -> void:
 	if _obj_label:
 		_obj_label.text = "Objectives found: %d / %d" % [_found, _total]
 
-func _win() -> void:
-	_end_game("ALL OBJECTIVES FOUND\nYou made it out... this time.\n\nPress R to play again",
-		Color(0.6, 1.0, 0.7), false)
+## All objectives collected: power on the exit and enrage the monster.
+func _open_exit() -> void:
+	_exit_active = true
+	if _exit:
+		_exit.activate()
+	if _monster and _monster.has_method("enrage"):
+		_monster.enrage()
+	if _audio:
+		_audio.play_spotted()
+	_flash(Color(0.0, 0.5, 0.2, 0.3), 0.6)
+	if _obj_label:
+		_obj_label.add_theme_color_override("font_color", Color(0.4, 1.0, 0.5))
+
+func _on_escaped() -> void:
+	_end_game("YOU ESCAPED\n\nPress R to play again", Color(0.5, 1.0, 0.6), false)
 
 # --- Monster & end-game -----------------------------------------------------
 
 func _spawn_monster() -> void:
 	_monster = MONSTER_SCENE.instantiate()
-	var pos := cell_to_world(_far_reachable_cell(Vector2i(0, 0)))
+	var pos := cell_to_world(_random_reachable_far(Vector2i(0, 0), cols * 0.45))
 	pos.y = 0.2
 	_monster.position = pos
 	_monster.caught.connect(_on_player_caught)
 	_monster.spotted.connect(_on_spotted)
 	add_child(_monster)
+
+func _spawn_exit() -> void:
+	_exit = EXIT_SCENE.instantiate()
+	var pos := cell_to_world(_far_reachable_cell(Vector2i(0, 0)))  # far corner
+	pos.y = 0.0
+	_exit.position = pos
+	_exit.escaped.connect(_on_escaped)
+	add_child(_exit)
+
+## A random reachable cell at least `min_dist` cells from `from`.
+func _random_reachable_far(from: Vector2i, min_dist: float) -> Vector2i:
+	var cands: Array[Vector2i] = []
+	for c in _reachable:
+		if Vector2(c.x - from.x, c.y - from.y).length() >= min_dist:
+			cands.append(c)
+	if cands.is_empty():
+		return _far_reachable_cell(from)
+	return cands[_rng.randi_range(0, cands.size() - 1)]
 
 func _on_player_caught() -> void:
 	# Jumpscare: yank the monster right up to the player's face, then rattle
