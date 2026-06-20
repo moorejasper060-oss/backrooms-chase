@@ -3,6 +3,7 @@ extends CharacterBody3D
 ## player, then pathfinds to them via the maze graph. Catches on contact.
 
 signal caught
+signal spotted   # emitted the moment it locks onto the player
 
 enum State { WANDER, CHASE }
 
@@ -44,7 +45,23 @@ var _anim_t := 0.0
 func _ready() -> void:
 	add_to_group("monster")
 	world = get_parent()
+	_apply_difficulty()
 	_build_body()
+
+func _apply_difficulty() -> void:
+	match Settings.difficulty:
+		0:  # Easy
+			chase_speed = 4.8
+			sight_range = 18.0
+			hear_radius = 4.0
+			give_up_time = 4.0
+		2:  # Hard
+			chase_speed = 6.3
+			sight_range = 30.0
+			hear_radius = 6.0
+			give_up_time = 9.0
+		_:
+			pass  # Normal keeps the exported defaults
 
 func _physics_process(delta: float) -> void:
 	if not active:
@@ -96,6 +113,7 @@ func _update_state(delta: float) -> void:
 			_lose = give_up_time
 			_lunge_timer = lunge_time  # burst of speed on first sighting
 			_path.clear()
+			spotted.emit()
 
 func _recompute_path() -> void:
 	var my_cell: Vector2i = world.world_to_cell(global_position)
@@ -181,7 +199,7 @@ func _build_body() -> void:
 	eye_mat.albedo_color = Color(1, 0, 0)
 	eye_mat.emission_enabled = true
 	eye_mat.emission = Color(1.0, 0.05, 0.05)
-	eye_mat.emission_energy_multiplier = 6.0
+	eye_mat.emission_energy_multiplier = 3.0
 
 	_mesh_root = Node3D.new()
 	add_child(_mesh_root)
@@ -218,8 +236,6 @@ func _build_body() -> void:
 	_leg_r.position = Vector3(0.13, 0.95, 0)
 	_mesh_root.add_child(_leg_r)
 	_leg_r.add_child(_box(Vector3(0.14, 0.95, 0.14), Vector3(0, -0.47, 0), dark))
-
-	$Light.light_color = Color(1.0, 0.15, 0.15)
 
 func _box(size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()

@@ -28,16 +28,13 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		rotate_y(-event.relative.x * mouse_sensitivity)
-		_pitch = clamp(_pitch - event.relative.y * mouse_sensitivity, -1.4, 1.4)
+		var sens: float = Settings.mouse_sensitivity
+		rotate_y(-event.relative.x * sens)
+		_pitch = clamp(_pitch - event.relative.y * sens, -1.4, 1.4)
 		head.rotation.x = _pitch
 	if event.is_action_pressed("flashlight"):
 		flashlight_on = not flashlight_on
-	if event.is_action_pressed("ui_cancel"):
-		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		else:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	# Esc is handled by the pause menu (pause.gd).
 
 func _process(delta: float) -> void:
 	if flashlight_on and battery > 0.0:

@@ -9,15 +9,17 @@ var _growl: AudioStreamPlayer
 var _heart: AudioStreamPlayer
 var _stinger: AudioStreamPlayer
 var _blip: AudioStreamPlayer
+var _screech: AudioStreamPlayer
 
 var _hb_accum := 0.0
 
 func _ready() -> void:
-	_drone = _make_player(_make_drone(), true, -16.0)
-	_growl = _make_player(_make_growl(), true, -60.0)
-	_heart = _make_player(_make_thump(), false, -10.0)
-	_stinger = _make_player(_make_stinger(), false, -3.0)
-	_blip = _make_player(_make_blip(), false, -10.0)
+	_drone = _make_player(_make_drone(), true, -11.0)
+	_growl = _make_player(_make_growl(), true, -55.0)
+	_heart = _make_player(_make_thump(), false, -6.0)
+	_stinger = _make_player(_make_stinger(), false, 1.0)
+	_blip = _make_player(_make_blip(), false, -5.0)
+	_screech = _make_player(_make_screech(), false, -1.0)
 	_drone.play()
 	_growl.play()
 
@@ -33,15 +35,15 @@ func update(dist: float, chasing: bool, delta: float) -> void:
 	# Heartbeat: faster and louder the closer the monster gets (within range).
 	if dist < 16.0:
 		var closeness := 1.0 - dist / 16.0
-		_heart.volume_db = lerpf(-22.0, -5.0, closeness)
+		_heart.volume_db = lerpf(-15.0, 2.0, closeness)
 		_hb_accum -= delta
 		if _hb_accum <= 0.0:
 			_hb_accum = lerpf(1.1, 0.34, closeness)
 			_heart.play()
 	# Chase growl swells while it's actively hunting and near.
-	var target := -60.0
+	var target := -55.0
 	if chasing:
-		target = lerpf(-26.0, -6.0, clampf(1.0 - dist / 18.0, 0.0, 1.0))
+		target = lerpf(-22.0, -2.0, clampf(1.0 - dist / 18.0, 0.0, 1.0))
 	_growl.volume_db = lerpf(_growl.volume_db, target, clampf(delta * 4.0, 0.0, 1.0))
 
 func play_stinger() -> void:
@@ -49,6 +51,9 @@ func play_stinger() -> void:
 
 func play_blip() -> void:
 	_blip.play()
+
+func play_spotted() -> void:
+	_screech.play()
 
 # --- Synthesis --------------------------------------------------------------
 
@@ -117,6 +122,20 @@ func _make_stinger() -> AudioStreamWAV:
 		v /= freqs.size()
 		v += 0.5 * (randf() * 2.0 - 1.0) * exp(-t * 30.0)
 		s[i] = v * env * 0.9
+	return _make_wav(s, false)
+
+## A sharp warbling screech for the moment the monster locks onto you.
+func _make_screech() -> AudioStreamWAV:
+	var n := int(RATE * 0.6)
+	var s := PackedFloat32Array()
+	s.resize(n)
+	for i in n:
+		var t := float(i) / RATE
+		var env := sin(PI * clampf(t / 0.6, 0.0, 1.0))
+		var sweep := 700.0 + 800.0 * sin(TAU * 3.5 * t)
+		var v := 0.5 * sin(TAU * sweep * t) + 0.3 * sin(TAU * sweep * 1.5 * t)
+		v += 0.3 * (randf() * 2.0 - 1.0)
+		s[i] = v * env * 0.7
 	return _make_wav(s, false)
 
 func _make_blip() -> AudioStreamWAV:

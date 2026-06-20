@@ -29,8 +29,10 @@ var _ceiling_lights: Array[OmniLight3D] = []
 
 # Audio + cached player reference
 const AUDIO_SCRIPT := preload("res://audio.gd")
+const PAUSE_SCRIPT := preload("res://pause.gd")
 var _audio: Node
 var _player: Node3D
+var _spot_cooldown := 0.0
 
 # Maze edge data (true = a wall exists on that edge)
 var _wall_v := []  # vertical walls, size (cols+1) x rows
@@ -64,6 +66,9 @@ func _ready() -> void:
 	_player = get_parent().get_node_or_null("Player")
 	_audio = AUDIO_SCRIPT.new()
 	add_child(_audio)
+	var pause := PAUSE_SCRIPT.new()
+	pause.world = self
+	add_child(pause)
 
 # --- Atmosphere -------------------------------------------------------------
 
@@ -289,6 +294,7 @@ func _add_lights() -> void:
 			add_child(light)
 
 func _process(delta: float) -> void:
+	_spot_cooldown = maxf(0.0, _spot_cooldown - delta)
 	# Cheap fluorescent stutter on the flickering tubes.
 	for l in _ceiling_lights:
 		if l.get_meta("flicker", false) and _rng.randf() < 0.07:
@@ -385,6 +391,7 @@ func _spawn_monster() -> void:
 	pos.y = 0.2
 	_monster.position = pos
 	_monster.caught.connect(_on_player_caught)
+	_monster.spotted.connect(_on_spotted)
 	add_child(_monster)
 
 func _on_player_caught() -> void:
@@ -402,16 +409,33 @@ func _on_player_caught() -> void:
 		_audio.play_stinger()
 	_end_game("CAUGHT\n\nPress R to try again", Color(1.0, 0.3, 0.3), true)
 
-func _flash_red() -> void:
+func _flash(color: Color, dur: float) -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	var rect := ColorRect.new()
 	rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	rect.color = Color(0.6, 0.0, 0.0, 0.65)
+	rect.color = color
 	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(rect)
+	var faded := color
+	faded.a = 0.0
 	var tw := create_tween()
-	tw.tween_property(rect, "color", Color(0.6, 0.0, 0.0, 0.0), 1.3)
+	tw.tween_property(rect, "color", faded, dur)
+	tw.tween_callback(layer.queue_free)
+
+func _flash_red() -> void:
+	_flash(Color(0.6, 0.0, 0.0, 0.7), 1.3)
+
+## The monster just locked onto the player — screech + jolt (rate-limited).
+func _on_spotted() -> void:
+	if _game_over or _spot_cooldown > 0.0:
+		return
+	_spot_cooldown = 6.0
+	if _audio:
+		_audio.play_spotted()
+	if _player and _player.has_method("add_shake"):
+		_player.add_shake(0.6)
+	_flash(Color(0.5, 0.0, 0.0, 0.35), 0.5)
 
 func _end_game(message: String, color: Color, freeze_player: bool) -> void:
 	if _game_over:
