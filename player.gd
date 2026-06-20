@@ -9,6 +9,10 @@ extends CharacterBody3D
 @export var flashlight_energy := 6.0
 @export var battery_drain := 1.1            # percent per second while lit
 @export var battery_per_pickup := 35.0
+@export var stamina_max := 100.0
+@export var sprint_drain := 30.0            # stamina per second while sprinting
+@export var stamina_regen := 18.0           # stamina per second while not
+@export var exhaust_recover := 30.0         # must reach this before sprinting again
 
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera3D
@@ -19,6 +23,9 @@ var battery := 100.0
 var flashlight_on := true
 var _bat_fill: ColorRect
 var _shake := 0.0
+var stamina := 100.0
+var _exhausted := false
+var _stam_fill: ColorRect
 
 func _ready() -> void:
 	add_to_group("player")
@@ -62,7 +69,19 @@ func _physics_process(delta: float) -> void:
 
 	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction := (transform.basis * Vector3(input_dir.x, 0.0, input_dir.y)).normalized()
-	var speed := sprint_speed if Input.is_action_pressed("sprint") else walk_speed
+
+	# Sprint is gated by stamina; emptying it locks you to walking until recovered.
+	var sprinting := Input.is_action_pressed("sprint") and direction != Vector3.ZERO \
+		and stamina > 0.0 and not _exhausted
+	if sprinting:
+		stamina = maxf(0.0, stamina - sprint_drain * delta)
+		if stamina <= 0.0:
+			_exhausted = true
+	else:
+		stamina = minf(stamina_max, stamina + stamina_regen * delta)
+		if _exhausted and stamina >= exhaust_recover:
+			_exhausted = false
+	var speed := sprint_speed if sprinting else walk_speed
 
 	if direction:
 		velocity.x = direction.x * speed
@@ -91,6 +110,24 @@ func jumpscare(target_pos: Vector3) -> void:
 
 func _make_hud() -> void:
 	var layer := CanvasLayer.new()
+
+	var stam_label := Label.new()
+	stam_label.text = "Stamina"
+	stam_label.position = Vector2(16, 616)
+	stam_label.add_theme_font_size_override("font_size", 14)
+	stam_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+	layer.add_child(stam_label)
+	var stam_bg := ColorRect.new()
+	stam_bg.color = Color(0.08, 0.08, 0.08, 0.85)
+	stam_bg.position = Vector2(16, 638)
+	stam_bg.size = Vector2(204, 16)
+	layer.add_child(stam_bg)
+	_stam_fill = ColorRect.new()
+	_stam_fill.color = Color(0.4, 0.8, 1.0)
+	_stam_fill.position = Vector2(18, 640)
+	_stam_fill.size = Vector2(200, 12)
+	layer.add_child(_stam_fill)
+
 	var label := Label.new()
 	label.text = "Flashlight: F"
 	label.position = Vector2(16, 662)
@@ -113,6 +150,9 @@ func _update_hud() -> void:
 	if _bat_fill:
 		_bat_fill.size.x = 200.0 * battery / 100.0
 		_bat_fill.color = Color(0.9, 0.3, 0.2) if battery < 20.0 else Color(0.9, 0.85, 0.3)
+	if _stam_fill:
+		_stam_fill.size.x = 200.0 * stamina / stamina_max
+		_stam_fill.color = Color(0.9, 0.4, 0.2) if _exhausted else Color(0.4, 0.8, 1.0)
 
 ## Registers movement keys at runtime (physical/layout-independent).
 func _ensure_input_actions() -> void:
