@@ -7,12 +7,14 @@ signal caught
 enum State { WANDER, CHASE }
 
 @export var wander_speed := 2.5
-@export var chase_speed := 5.0
-@export var sight_range := 20.0
-@export var hear_radius := 4.0
-@export var give_up_time := 4.0
-@export var catch_distance := 1.5
+@export var chase_speed := 5.5
+@export var sight_range := 24.0
+@export var hear_radius := 5.0
+@export var give_up_time := 6.0
+@export var catch_distance := 1.6
 @export var gravity := 18.0
+@export var lunge_bonus := 1.6   # brief speed burst the moment it spots you
+@export var lunge_time := 1.0
 
 @onready var head: Node3D = $Head
 
@@ -24,6 +26,7 @@ var _state: State = State.WANDER
 var _path: Array[Vector2i] = []
 var _repath := 0.0
 var _lose := 0.0
+var _lunge_timer := 0.0
 var _wander_target = null  # Vector2i, or null when we need a new one
 
 func _ready() -> void:
@@ -46,6 +49,7 @@ func _physics_process(delta: float) -> void:
 		velocity.y = 0.0
 
 	_update_state(delta)
+	_lunge_timer = maxf(0.0, _lunge_timer - delta)
 
 	_repath -= delta
 	if _repath <= 0.0:
@@ -72,6 +76,7 @@ func _update_state(delta: float) -> void:
 		if sees or dist <= hear_radius:
 			_state = State.CHASE
 			_lose = give_up_time
+			_lunge_timer = lunge_time  # burst of speed on first sighting
 			_path.clear()
 
 func _recompute_path() -> void:
@@ -87,15 +92,32 @@ func _recompute_path() -> void:
 
 func _follow_path() -> void:
 	var speed := chase_speed if _state == State.CHASE else wander_speed
-	if _path.is_empty():
+	if _lunge_timer > 0.0:
+		speed += lunge_bonus
+
+	# When it can actually see the player, ditch the grid and home straight in
+	# on their real position — otherwise it would stall at the cell centre.
+	var chasing_visible := _state == State.CHASE and _can_see_player()
+
+	var target: Vector3
+	if chasing_visible:
+		target = player.global_position
+	elif not _path.is_empty():
+		target = world.cell_to_world(_path[0])
+	else:
 		velocity.x = move_toward(velocity.x, 0.0, speed)
 		velocity.z = move_toward(velocity.z, 0.0, speed)
 		return
-	var target: Vector3 = world.cell_to_world(_path[0])
+
 	var to := Vector3(target.x - global_position.x, 0.0, target.z - global_position.z)
-	if to.length() < 0.6:
+
+	# Advance to the next waypoint once we reach this one (grid navigation only).
+	if not chasing_visible and to.length() < 0.6:
 		_path.pop_front()
 		return
+	if to.length() < 0.05:
+		return
+
 	var dir := to.normalized()
 	velocity.x = dir.x * speed
 	velocity.z = dir.z * speed
@@ -128,9 +150,9 @@ func _setup_appearance() -> void:
 	var eye_mat := StandardMaterial3D.new()
 	eye_mat.albedo_color = Color(1, 0, 0)
 	eye_mat.emission_enabled = true
-	eye_mat.emission = Color(1.0, 0.12, 0.12)
-	eye_mat.emission_energy_multiplier = 4.0
+	eye_mat.emission = Color(1.0, 0.05, 0.05)
+	eye_mat.emission_energy_multiplier = 6.0
 	$EyeL.material_override = eye_mat
 	$EyeR.material_override = eye_mat
 
-	$Light.light_color = Color(1.0, 0.25, 0.25)
+	$Light.light_color = Color(1.0, 0.15, 0.15)
