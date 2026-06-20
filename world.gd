@@ -145,44 +145,49 @@ func _setup_environment() -> void:
 	add_child(we)
 
 func _make_materials() -> void:
-	# Triplanar (world-space) mapping gives consistent texel density on every
-	# box regardless of its size, and tiles seamlessly between adjacent walls.
-	_mat_wall = StandardMaterial3D.new()
-	_mat_wall.albedo_texture = _make_wallpaper_texture()
-	_mat_wall.normal_enabled = true
-	_mat_wall.normal_texture = _make_wall_normal()
-	_mat_wall.normal_scale = 0.6
-	_mat_wall.uv1_triplanar = true
-	_mat_wall.uv1_world_triplanar = true
-	_mat_wall.uv1_scale = Vector3(0.45, 0.45, 0.45)
-	_mat_wall.roughness = 0.95
+	# Real CC0 PBR texture sets (ambientCG), triplanar world-mapped so they tile
+	# seamlessly across every box regardless of size.
+	_mat_wall = _pbr_material("res://textures/wall_", false, Vector3(0.4, 0.4, 0.4))
+	_mat_wall.albedo_color = Color(0.86, 0.72, 0.33)   # tint plaster -> backrooms yellow
 
-	_mat_floor = StandardMaterial3D.new()
-	_mat_floor.albedo_texture = _make_carpet_texture()
-	_mat_floor.normal_enabled = true
-	_mat_floor.normal_texture = _make_carpet_normal()
-	_mat_floor.normal_scale = 0.8
-	_mat_floor.uv1_triplanar = true
-	_mat_floor.uv1_world_triplanar = true
-	_mat_floor.uv1_scale = Vector3(0.6, 0.6, 0.6)
-	_mat_floor.roughness = 1.0
+	_mat_floor = _pbr_material("res://textures/floor_", true, Vector3(0.45, 0.45, 0.45))
 
-	_mat_ceiling = StandardMaterial3D.new()
-	_mat_ceiling.albedo_texture = _make_ceiling_texture()
-	_mat_ceiling.normal_enabled = true
-	_mat_ceiling.normal_texture = _make_ceiling_normal()
-	_mat_ceiling.normal_scale = 0.7
-	_mat_ceiling.uv1_triplanar = true
-	_mat_ceiling.uv1_world_triplanar = true
-	_mat_ceiling.uv1_scale = Vector3(0.5, 0.5, 0.5)
-	_mat_ceiling.roughness = 0.9
+	_mat_ceiling = _pbr_material("res://textures/ceiling_", true, Vector3(0.4, 0.4, 0.4))
 
-	_mat_pillar = StandardMaterial3D.new()
-	_mat_pillar.albedo_texture = _make_wallpaper_texture()
-	_mat_pillar.uv1_triplanar = true
-	_mat_pillar.uv1_world_triplanar = true
-	_mat_pillar.uv1_scale = Vector3(0.6, 0.6, 0.6)
-	_mat_pillar.roughness = 0.9
+	_mat_pillar = _pbr_material("res://textures/wall_", false, Vector3(0.45, 0.45, 0.45))
+	_mat_pillar.albedo_color = Color(0.82, 0.70, 0.42)
+
+## Builds a StandardMaterial3D from a CC0 set named `<prefix>color/normal/rough
+## (/ao).jpg`, triplanar world-mapped. Missing maps are skipped gracefully.
+func _pbr_material(prefix: String, has_ao: bool, uv_scale: Vector3) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	var albedo := _load_tex(prefix + "color.jpg")
+	if albedo:
+		m.albedo_texture = albedo
+	var nrm := _load_tex(prefix + "normal.jpg")
+	if nrm:
+		m.normal_enabled = true
+		m.normal_texture = nrm
+		m.normal_scale = 1.0
+	var rgh := _load_tex(prefix + "rough.jpg")
+	if rgh:
+		m.roughness_texture = rgh
+	if has_ao:
+		var ao := _load_tex(prefix + "ao.jpg")
+		if ao:
+			m.ao_enabled = true
+			m.ao_texture = ao
+	m.uv1_triplanar = true
+	m.uv1_world_triplanar = true
+	m.uv1_scale = uv_scale
+	return m
+
+func _load_tex(path: String) -> ImageTexture:
+	var img := Image.new()
+	if img.load(ProjectSettings.globalize_path(path)) != OK:
+		return null
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
 
 ## Dingy yellow wallpaper: subtle vertical pattern + water staining + grain.
 func _make_wallpaper_texture() -> ImageTexture:

@@ -6,7 +6,7 @@ extends CharacterBody3D
 @export var sprint_speed := 7.0
 @export var mouse_sensitivity := 0.0025
 @export var gravity := 18.0
-@export var flashlight_energy := 6.0
+@export var flashlight_energy := 4.0
 @export var battery_drain := 1.1            # percent per second while lit
 @export var battery_per_pickup := 35.0
 @export var stamina_max := 100.0
