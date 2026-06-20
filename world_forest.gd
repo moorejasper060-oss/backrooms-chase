@@ -9,7 +9,7 @@ extends Node3D
 @export var rows := 40
 @export var cell_size := 3.0          # 40 * 3 = 120 m of forest
 @export var part_count := 5           # car parts to find
-@export var battery_count := 5        # flashlight batteries scattered
+@export var battery_count := 3        # flashlight batteries scattered (fewer items)
 @export var tree_count := 480         # scattered interior trees (MultiMesh — cheap to go dense)
 @export var bush_count := 120         # primitive filler bushes (real ferns/logs added on top)
 @export var log_count := 0            # replaced by real Poly Haven fallen logs
@@ -229,9 +229,8 @@ func _scatter_trees() -> void:
 		_add_tree_xform(cell, pine_xforms if _rng.randf() < 0.65 else leaf_xforms, colliders)
 		placed += 1
 
-	# Whole forest in a couple of GPU-instanced draw calls.
-	_make_multimesh(_build_conifer_mesh(), pine_xforms)
-	_make_multimesh(_build_broadleaf_mesh(), leaf_xforms)
+	# Whole forest as GPU-instanced real-tree billboards (~one draw call).
+	_make_multimesh(_build_impostor_tree_mesh(), pine_xforms + leaf_xforms)
 
 	# Collision-only cylinders (the MultiMesh is the visual).
 	for c in colliders:
@@ -241,7 +240,7 @@ func _add_tree_xform(cell: Vector2i, arr: Array, colliders: Array) -> void:
 	_block(cell)
 	var base := cell_to_world(cell)
 	var pos := Vector3(base.x + _rng.randf_range(-0.9, 0.9), 0.0, base.z + _rng.randf_range(-0.9, 0.9))
-	var s := _rng.randf_range(0.8, 1.5)
+	var s := _rng.randf_range(1.4, 2.4)
 	var yaw := _rng.randf_range(0.0, TAU)
 	arr.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s)), pos))
 	colliders.append([pos, s])
@@ -265,12 +264,38 @@ func _tree_collider(pos: Vector3, s: float) -> void:
 	body.position = pos
 	var col := CollisionShape3D.new()
 	var sh := CylinderShape3D.new()
-	sh.radius = 0.4 * s
-	sh.height = 7.0 * s
+	sh.radius = 0.5            # thin trunk collider regardless of canopy scale
+	sh.height = 5.0
 	col.shape = sh
-	col.position = Vector3(0.0, 3.5 * s, 0.0)
+	col.position = Vector3(0.0, 2.5, 0.0)
 	body.add_child(col)
 	add_child(body)
+
+## Real-tree billboard: two crossed quads textured with a photo-scanned tree
+## impostor (alpha-scissor cutout), GPU-instanced so the whole forest is ~one
+## draw call yet looks like real trees instead of primitives.
+func _build_impostor_tree_mesh() -> ArrayMesh:
+	var w := 4.21
+	var hgt := 3.41
+	var mat := StandardMaterial3D.new()
+	var tex := _load_tex("res://textures/tree1_impostor.png")
+	if tex:
+		mat.albedo_texture = tex
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mat.alpha_scissor_threshold = 0.5
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.albedo_color = Color(0.6, 0.64, 0.58)   # slight dark night tint
+	mat.roughness = 1.0
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var q := QuadMesh.new()
+	q.size = Vector2(w, hgt)
+	st.append_from(q, 0, Transform3D(Basis(), Vector3(0.0, hgt * 0.5, 0.0)))
+	st.append_from(q, 0, Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(0.0, hgt * 0.5, 0.0)))
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, st.commit_to_arrays())
+	mesh.surface_set_material(0, mat)
+	return mesh
 
 ## A layered conifer as one 2-surface mesh (trunk=bark, foliage=leaves) so the
 ## whole forest renders via MultiMesh in a couple of draw calls. Many drooping
@@ -644,6 +669,13 @@ func _spawn_monster() -> void:
 	_monster.caught.connect(_on_player_caught)
 	_monster.spotted.connect(_on_spotted)
 	add_child(_monster)
+	# Dense woods break line-of-sight too easily, so make it relentless: hears you
+	# through the trees, hunts your last position far longer, and is a touch faster
+	# than your walk (you must sprint — and manage stamina — to break away).
+	_monster.hear_radius = maxf(_monster.hear_radius, 8.5)
+	_monster.give_up_time = maxf(_monster.give_up_time, 11.0)
+	_monster.sight_range = maxf(_monster.sight_range, 30.0)
+	_monster.chase_speed += 0.6
 
 func _spawn_car() -> void:
 	_car = CAR_SCRIPT.new()
