@@ -5,8 +5,10 @@ extends Area3D
 ## dropped in later by replacing _build().
 
 signal escaped
+signal part_installed(part_name)
 
 var active := false
+var _player: Node = null               # player while inside the install/escape trigger
 var _headlights: Array[OmniLight3D] = []
 var _lens_mat: StandardMaterial3D
 
@@ -14,6 +16,7 @@ func _ready() -> void:
 	add_to_group("car")
 	_build()
 	body_entered.connect(_on_body_entered)
+	body_exited.connect(_on_body_exited)
 
 func _build() -> void:
 	var body_mat := StandardMaterial3D.new()
@@ -99,5 +102,20 @@ func activate() -> void:
 		l.light_energy = 4.0
 
 func _on_body_entered(body: Node) -> void:
-	if active and body.is_in_group("player"):
-		escaped.emit()
+	if not body.is_in_group("player"):
+		return
+	_player = body
+	if active:
+		escaped.emit()       # repaired already — entering wins
+
+func _on_body_exited(body: Node) -> void:
+	if body == _player:
+		_player = null
+
+## Press E at the car (before it's repaired) to install the part in hand.
+func _unhandled_input(event: InputEvent) -> void:
+	if active or _player == null:
+		return
+	if event.is_action_pressed("interact") and _player.has_method("is_carrying") and _player.is_carrying():
+		var part: String = _player.drop_carried()
+		part_installed.emit(part)

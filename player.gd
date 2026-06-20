@@ -21,6 +21,7 @@ extends CharacterBody3D
 var _pitch := 0.0
 var battery := 100.0
 var flashlight_on := true
+var carrying := ""   # forest: name of the car part in hand; "" = empty-handed
 var _bat_fill: ColorRect
 var _shake := 0.0
 var stamina := 100.0
@@ -95,6 +96,21 @@ func _physics_process(delta: float) -> void:
 ## Called by a pickup when collected — recharges the flashlight.
 func collect_pickup() -> void:
 	battery = minf(100.0, battery + battery_per_pickup)
+
+# --- Forest: carrying one car part at a time ---
+func carry_part(part_name: String) -> void:
+	carrying = part_name
+
+func is_carrying() -> bool:
+	return carrying != ""
+
+func get_carried() -> String:
+	return carrying
+
+func drop_carried() -> String:
+	var n := carrying
+	carrying = ""
+	return n
 
 func add_shake(amount: float) -> void:
 	_shake = minf(1.0, _shake + amount)

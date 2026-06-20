@@ -13,6 +13,7 @@ signal collected
 @export var recharges := true            # refill flashlight battery on pickup
 @export var counts_as_objective := true  # tick the objective/part counter
 @export var part_name := ""              # car-part label shown in the HUD
+@export var must_carry := false          # forest car part: carry to the car to install (not auto-collected)
 
 @onready var mesh: MeshInstance3D = $Mesh
 @onready var light: OmniLight3D = $Light
@@ -43,8 +44,18 @@ func _process(delta: float) -> void:
 
 func _on_body_entered(body: Node) -> void:
 	# Only the player collects (the monster, also a CharacterBody3D, won't).
-	if body.is_in_group("player"):
-		if recharges and body.has_method("collect_pickup"):
-			body.collect_pickup()
-		collected.emit()
-		queue_free()
+	if not body.is_in_group("player"):
+		return
+	if must_carry:
+		# Forest car part: one in hand at a time; install it at the car.
+		if body.has_method("is_carrying") and body.is_carrying():
+			return  # hands full — leave this part for later
+		if body.has_method("carry_part"):
+			body.carry_part(part_name)
+			collected.emit()
+			queue_free()
+		return
+	if recharges and body.has_method("collect_pickup"):
+		body.collect_pickup()
+	collected.emit()
+	queue_free()

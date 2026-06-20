@@ -445,13 +445,13 @@ func _spawn_parts() -> void:
 	for i in cells.size():
 		var part := PICKUP_SCENE.instantiate()
 		part.recharges = false                 # parts don't refill the torch
-		part.counts_as_objective = true
+		part.counts_as_objective = true        # in "pickup" group so the entity lurks near them
+		part.must_carry = true                 # pick up + carry to the car to install
 		part.part_name = PART_NAMES[i % PART_NAMES.size()]
 		part.glow_color = Color(1.0, 0.55, 0.2) # warm amber so parts read apart from batteries
 		var pos := cell_to_world(cells[i])
 		pos.y = 1.1
 		part.position = pos
-		part.collected.connect(_on_part_collected)
 		add_child(part)
 
 func _spawn_batteries() -> void:
@@ -493,15 +493,17 @@ func _spawn_car() -> void:
 	pos.y = 0.0
 	_car.position = pos
 	_car.escaped.connect(_on_escaped)
+	_car.part_installed.connect(_on_part_installed)
 	add_child(_car)
 
 # --- Objectives -------------------------------------------------------------
 
-func _on_part_collected() -> void:
+func _on_part_installed(_part_name: String) -> void:
 	_found += 1
 	_update_objectives_hud()
 	if _audio:
 		_audio.play_blip()
+	_flash(Color(0.3, 0.5, 0.2, 0.18), 0.4)   # brief green confirm
 	if _found >= _total and not _car_ready:
 		_repair_car()
 
@@ -590,6 +592,12 @@ func _process(delta: float) -> void:
 	if _car_ready and _car and _player and _obj_label and not _game_over:
 		var cd := _player.global_position.distance_to(_car.global_position)
 		_obj_label.text = "CAR REPAIRED  —  GET TO IT  —  %dm" % int(cd)
+	elif _obj_label and _player and _car and not _game_over:
+		if _player.has_method("is_carrying") and _player.is_carrying():
+			var cd2 := int(_player.global_position.distance_to(_car.global_position))
+			_obj_label.text = "Carrying %s — to the car: %dm (press E)   [%d/%d]" % [_player.get_carried(), cd2, _found, _total]
+		else:
+			_obj_label.text = "Find a car part: %d / %d installed" % [_found, _total]
 
 # --- Monster reactions & end-game (same as the Backrooms level) -------------
 
