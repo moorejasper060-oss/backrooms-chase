@@ -27,6 +27,8 @@ const TREE_VIEW := 95.0               # whole tree chunks beyond this cull (fog/
 const RIVER_HALF := 5.0               # half-width of the flat channel bottom
 const RIVER_BANK := 5.5               # bank slope width either side
 const RIVER_DEPTH := 1.7              # how deep the channel is cut (shallow — wadeable)
+const MOUNTAIN_INWARD := 8.0          # how far the front mountains' base creeps inward past the edge
+const EDGE_MARGIN := 6                # cells near the edge kept clear of car/part spawns (mountain zone)
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
 const MONSTER_SCENE := preload("res://monster.tscn")
@@ -118,7 +120,7 @@ var _daytime := false
 var _blocked := {}      # Vector2i -> true
 var passages := {}      # Vector2i -> Array[Vector2i]
 var _reachable := {}
-var _spawn_cell := Vector2i(5, 5)
+var _spawn_cell := Vector2i(10, 10)   # inset off the corner so the cabin clears the edge mountains
 
 var _rng := RandomNumberGenerator.new()
 var _noise := FastNoiseLite.new()
@@ -522,8 +524,8 @@ func _tint_color(kind: String) -> Color:
 ## can squeeze through and walk off the edge of the terrain into the void.
 func _build_perimeter_walls() -> void:
 	var w := cols * cell_size
-	var lo := 2.0
-	var hi := w - 2.0
+	var lo := 11.0          # stop the player short of the edge mountains' inner slopes
+	var hi := w - 11.0
 	var span := hi - lo
 	var h := 12.0
 	var t := 1.0
@@ -561,9 +563,11 @@ func _build_mountains() -> void:
 			# Overshoot the corners (-14 .. w+14) so adjacent sides overlap there.
 			var t := lerpf(-14.0, w + 14.0, (float(i) + _rng.randf_range(0.15, 0.85)) / float(along))
 			for row in depth_rows:
-				var depth := 6.0 + row * 26.0 + _rng.randf_range(0.0, 10.0)   # metres beyond the edge
-				var h := _rng.randf_range(34.0, 56.0) + row * 18.0
-				var br := _rng.randf_range(24.0, 40.0) + row * 7.0
+				var br := _rng.randf_range(24.0, 42.0) + row * 8.0
+				# Front row's base creeps only MOUNTAIN_INWARD metres past the edge
+				# (kills the void seam); back rows step well outward and tower behind.
+				var depth := br - MOUNTAIN_INWARD + row * 30.0
+				var h := _rng.randf_range(36.0, 56.0) + row * 20.0
 				var px := 0.0
 				var pz := 0.0
 				match side:
@@ -1122,10 +1126,12 @@ func _reachable_from(start: Vector2i) -> Dictionary:
 				stack.append(nb)
 	return seen
 
-func _far_reachable_cell(from: Vector2i) -> Vector2i:
+func _far_reachable_cell(from: Vector2i, margin := 0) -> Vector2i:
 	var best := from
 	var best_d := -1.0
 	for c in _reachable:
+		if c.x < margin or c.x >= cols - margin or c.y < margin or c.y >= rows - margin:
+			continue   # keep clear of the edge band where mountains overhang
 		var dd := Vector2(c.x - from.x, c.y - from.y).length()
 		if dd > best_d:
 			best_d = dd
@@ -1201,6 +1207,8 @@ func _spawn_batteries() -> void:
 func _pick_cells(n: int, exclude: Vector2i) -> Array:
 	var all: Array[Vector2i] = []
 	for c in _reachable:
+		if c.x < EDGE_MARGIN or c.x >= cols - EDGE_MARGIN or c.y < EDGE_MARGIN or c.y >= rows - EDGE_MARGIN:
+			continue   # don't hide parts/batteries under the edge mountains
 		if c != exclude and Vector2(c.x - exclude.x, c.y - exclude.y).length() > 4.0:
 			all.append(c)
 	for i in range(all.size() - 1, 0, -1):
@@ -1227,7 +1235,7 @@ func _spawn_monster() -> void:
 
 func _spawn_car() -> void:
 	_car = CAR_SCRIPT.new()
-	var pos := cell_to_world(_far_reachable_cell(_spawn_cell))
+	var pos := cell_to_world(_far_reachable_cell(_spawn_cell, EDGE_MARGIN))
 	pos.y = _ground_height(pos.x, pos.z)
 	_car.position = pos
 	_car.escaped.connect(_on_escaped)
