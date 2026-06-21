@@ -11,7 +11,7 @@ extends Node3D
 @export var part_count := 5           # car parts to find
 @export var battery_count := 3        # flashlight batteries scattered (fewer items)
 @export var tree_count := 850         # dense interior trees (cheap billboards — make it a FOREST)
-@export var bush_count := 120         # primitive filler bushes (real ferns/logs added on top)
+@export var bush_count := 170         # filler bushes (varied colour; ferns/mushrooms/pebbles on top)
 @export var log_count := 0            # replaced by real Poly Haven fallen logs
 @export var grass_count := 6000       # GPU-instanced grass tufts covering the forest floor
 @export var forest_seed := 0          # 0 = random each run
@@ -224,11 +224,15 @@ func _make_materials() -> void:
 	_mat_ground = _pbr_material("res://textures/forestfloor_", Vector3(0.16, 0.16, 0.16))
 	_mat_ground.albedo_color = Color(0.72, 0.74, 0.7)    # gentle knock-down for night
 	_mat_bark = _pbr_material("res://textures/bark_", Vector3(0.5, 0.5, 0.5))
-	_mat_bark.albedo_color = Color(0.7, 0.7, 0.68)
+	_mat_bark.albedo_color = Color(0.6, 0.58, 0.54)
+	_mat_bark.vertex_color_use_as_albedo = true          # per-tree MultiMesh tint
 	_mat_cabin = _pbr_material("res://textures/cabin_", Vector3(0.45, 0.45, 0.45))
 	_mat_cabin.albedo_color = Color(0.6, 0.58, 0.55)
 	_mat_foliage = _pbr_material("res://textures/foliage_", Vector3(0.85, 0.85, 0.85))
-	_mat_foliage.albedo_color = Color(0.4, 0.5, 0.32)    # dark green night tint
+	_mat_foliage.albedo_color = Color(0.32, 0.42, 0.22)  # darker night green
+	_mat_foliage.vertex_color_use_as_albedo = true       # per-tree tint variety
+	_mat_foliage.backlight_enabled = true                # moonlight bleeds through
+	_mat_foliage.backlight = Color(0.06, 0.1, 0.04)
 
 func _pbr_material(prefix: String, uv_scale: Vector3) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -397,17 +401,18 @@ func _scatter_grass() -> void:
 ## the woods, then sparse interior trees. Each blocks its grid cell so the
 ## monster pathfinds around the trunks; the player/monster physically collide.
 func _scatter_trees() -> void:
-	var xforms := []
+	var conifer_x := []     # real 3D layered pines (the majority)
+	var broadleaf_x := []   # rounded-crown trees for species variety
 	var colliders := []
 
-	# Dense impassable border wall (2-cell-thick) — these DO block nav so you
+	# Dense impassable border wall (2-cell-thick) — all conifers, block nav so you
 	# can't wander out of the woods.
 	for x in cols:
 		for z in rows:
 			if x <= 1 or x >= cols - 2 or z <= 1 or z >= rows - 2:
 				var c := cell_to_world(Vector2i(x, z))
 				_block(Vector2i(x, z))
-				_add_tree_at(c.x + _rng.randf_range(-1.0, 1.0), c.z + _rng.randf_range(-1.0, 1.0), xforms, colliders)
+				_add_tree_at(c.x + _rng.randf_range(-1.0, 1.0), c.z + _rng.randf_range(-1.0, 1.0), conifer_x, broadleaf_x, colliders, 0.0)
 
 	# Dense interior trees at continuous positions. They do NOT block nav cells,
 	# so the grid stays open (monster/player thread between trunks) and the forest
@@ -424,30 +429,43 @@ func _scatter_trees() -> void:
 		var z := _rng.randf_range(7.0, d - 7.0)
 		if Vector2(x - sw.x, z - sw.z).length() < 9.0:
 			continue  # keep the spawn/cabin clearing open
-		_add_tree_at(x, z, xforms, colliders)
+		_add_tree_at(x, z, conifer_x, broadleaf_x, colliders, 0.4)
 		placed += 1
 
-	# Whole forest as GPU-instanced real-tree billboards (~one draw call).
-	_make_multimesh(_build_impostor_tree_mesh(), xforms)
+	# Two real-3D species, each GPU-instanced → genuine volume from every angle
+	# (not flat billboards) in just a couple of draw calls.
+	_make_tree_multimesh(_build_conifer_mesh(), conifer_x)
+	_make_tree_multimesh(_build_broadleaf_mesh(), broadleaf_x)
 	for pos in colliders:
 		_tree_collider(pos)
 
-func _add_tree_at(x: float, z: float, xforms: Array, colliders: Array) -> void:
+## Assign a tree to the conifer or broadleaf batch and record its transform +
+## trunk collider. broadleaf_chance 0 forces a conifer (the dense pine border).
+func _add_tree_at(x: float, z: float, conifer_x: Array, broadleaf_x: Array, colliders: Array, broadleaf_chance: float) -> void:
 	var pos := Vector3(x, _ground_height(x, z), z)
-	var s := _rng.randf_range(1.5, 2.6)
 	var yaw := _rng.randf_range(0.0, TAU)
-	xforms.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s)), pos))
+	if _rng.randf() < broadleaf_chance:
+		var sb := _rng.randf_range(0.7, 1.25)
+		broadleaf_x.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(sb, sb * _rng.randf_range(0.9, 1.2), sb)), pos))
+	else:
+		var sc := _rng.randf_range(0.7, 1.4)
+		conifer_x.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(sc, sc * _rng.randf_range(0.9, 1.3), sc)), pos))
 	colliders.append(pos)
 
-func _make_multimesh(mesh: Mesh, xforms: Array) -> void:
+## Tree MultiMesh with per-instance colour so each tree is tinted a little
+## differently (darker / greener / browner) — kills the cloned-stamp look.
+func _make_tree_multimesh(mesh: Mesh, xforms: Array) -> void:
 	if xforms.is_empty():
 		return
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
 	mm.mesh = mesh
 	mm.instance_count = xforms.size()
 	for i in xforms.size():
 		mm.set_instance_transform(i, xforms[i])
+		var v := _rng.randf_range(0.72, 1.08)
+		mm.set_instance_color(i, Color(v * _rng.randf_range(0.85, 1.0), v, v * _rng.randf_range(0.78, 0.95)))
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -576,8 +594,8 @@ func _build_broadleaf_mesh() -> ArrayMesh:
 		var sm := SphereMesh.new()
 		sm.radius = b[1]
 		sm.height = float(b[1]) * 1.9
-		sm.radial_segments = 10
-		sm.rings = 6
+		sm.radial_segments = 8
+		sm.rings = 4
 		fs.append_from(sm, 0, Transform3D(Basis(), b[0]))
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, fs.commit_to_arrays())
 	mesh.surface_set_material(1, _mat_foliage)
@@ -586,35 +604,143 @@ func _build_broadleaf_mesh() -> ArrayMesh:
 ## Pure-visual ground clutter for density — bushes + fallen logs. No collision
 ## and no grid blocking, so they never trap the player or fragment pathfinding.
 func _scatter_decoration() -> void:
-	var bush_mat := StandardMaterial3D.new()
-	bush_mat.albedo_color = Color(0.04, 0.06, 0.04)
-	bush_mat.roughness = 1.0
-	var log_mat := StandardMaterial3D.new()
-	log_mat.albedo_color = Color(0.06, 0.045, 0.035)
-	log_mat.roughness = 1.0
+	# A palette of shared bush materials so bushes vary in colour (deep green,
+	# olive, dusty) instead of one flat near-black.
+	var bush_mats: Array[StandardMaterial3D] = []
+	for c in [Color(0.06, 0.11, 0.05), Color(0.1, 0.13, 0.06), Color(0.09, 0.1, 0.045), Color(0.12, 0.115, 0.06)]:
+		var bm := StandardMaterial3D.new()
+		bm.albedo_color = c
+		bm.roughness = 1.0
+		bush_mats.append(bm)
 
 	var w := cols * cell_size
 	var d := rows * cell_size
 	for _i in bush_count:
 		var bx := _rng.randf_range(2.0, w - 2.0)
 		var bz := _rng.randf_range(2.0, d - 2.0)
-		_place_bush(Vector3(bx, _ground_height(bx, bz), bz), bush_mat)
-	for _i in log_count:
-		_place_log(Vector3(_rng.randf_range(3.0, w - 3.0), 0.0, _rng.randf_range(3.0, d - 3.0)), log_mat)
+		_place_bush(Vector3(bx, _ground_height(bx, bz), bz), bush_mats[_rng.randi() % bush_mats.size()])
+
+	# Extra ground variety: mushroom clusters + scattered pebbles.
+	_scatter_mushrooms()
+	_scatter_pebbles()
 
 func _place_bush(pos: Vector3, mat: Material) -> void:
-	var clumps := _rng.randi_range(1, 3)
+	var clumps := _rng.randi_range(1, 4)
 	for _i in clumps:
 		var mi := MeshInstance3D.new()
 		var sm := SphereMesh.new()
-		var r := _rng.randf_range(0.4, 0.95)
+		var r := _rng.randf_range(0.35, 1.0)
 		sm.radius = r
-		sm.height = r * 1.1
+		sm.height = r * _rng.randf_range(0.7, 1.4)   # some flat & sprawling, some round
+		sm.radial_segments = 8
+		sm.rings = 4
 		mi.mesh = sm
 		mi.material_override = mat
-		mi.position = pos + Vector3(_rng.randf_range(-0.6, 0.6), r * 0.45, _rng.randf_range(-0.6, 0.6))
+		mi.position = pos + Vector3(_rng.randf_range(-0.7, 0.7), sm.height * 0.4, _rng.randf_range(-0.7, 0.7))
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mi)
+
+## Mushroom clusters in three species — red-cap, brown, and a pale glowing kind
+## that gives the woods an eerie bioluminescent flicker. Each species is one
+## GPU-instanced batch (2-surface mesh: pale stem + coloured cap).
+func _scatter_mushrooms() -> void:
+	var species := [
+		{"cap": Color(0.5, 0.08, 0.07), "glow": 0.0},   # fly-agaric red
+		{"cap": Color(0.32, 0.21, 0.12), "glow": 0.0},  # earthy brown
+		{"cap": Color(0.35, 0.55, 0.62), "glow": 1.6},  # pale glowing
+	]
+	var w := cols * cell_size
+	var d := rows * cell_size
+	for sp in species:
+		var mesh := _build_mushroom_mesh(sp["cap"], sp["glow"])
+		var xf := []
+		for _c in 16:
+			var cx := _rng.randf_range(4.0, w - 4.0)
+			var cz := _rng.randf_range(4.0, d - 4.0)
+			for _m in _rng.randi_range(2, 5):
+				var mx := cx + _rng.randf_range(-0.6, 0.6)
+				var mz := cz + _rng.randf_range(-0.6, 0.6)
+				var s := _rng.randf_range(0.7, 1.6)
+				xf.append(Transform3D(Basis(Vector3.UP, _rng.randf_range(0.0, TAU)).scaled(Vector3(s, s, s)), Vector3(mx, _ground_height(mx, mz), mz)))
+		_make_plain_multimesh(mesh, xf)
+
+func _build_mushroom_mesh(cap_color: Color, glow: float) -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	var stem_mat := StandardMaterial3D.new()
+	stem_mat.albedo_color = Color(0.82, 0.79, 0.7)
+	stem_mat.roughness = 1.0
+	var cap_mat := StandardMaterial3D.new()
+	cap_mat.albedo_color = cap_color
+	cap_mat.roughness = 0.85
+	if glow > 0.0:
+		cap_mat.emission_enabled = true
+		cap_mat.emission = cap_color
+		cap_mat.emission_energy_multiplier = glow
+	var ss := SurfaceTool.new()
+	ss.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var stem := CylinderMesh.new()
+	stem.top_radius = 0.03
+	stem.bottom_radius = 0.045
+	stem.height = 0.16
+	stem.radial_segments = 6
+	ss.append_from(stem, 0, Transform3D(Basis(), Vector3(0.0, 0.08, 0.0)))
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ss.commit_to_arrays())
+	mesh.surface_set_material(0, stem_mat)
+	var cs := SurfaceTool.new()
+	cs.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var cap := SphereMesh.new()
+	cap.radius = 0.09
+	cap.height = 0.1
+	cap.radial_segments = 8
+	cap.rings = 4
+	cs.append_from(cap, 0, Transform3D(Basis(), Vector3(0.0, 0.17, 0.0)))
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, cs.commit_to_arrays())
+	mesh.surface_set_material(1, cap_mat)
+	return mesh
+
+## Small dark pebbles scattered in clusters — low rock detail to vary the floor.
+func _scatter_pebbles() -> void:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.2, 0.2, 0.22)
+	mat.roughness = 1.0
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var sm := SphereMesh.new()
+	sm.radius = 0.18
+	sm.height = 0.24
+	sm.radial_segments = 6
+	sm.rings = 3
+	st.append_from(sm, 0, Transform3D(Basis(), Vector3(0.0, 0.05, 0.0)))
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, st.commit_to_arrays())
+	mesh.surface_set_material(0, mat)
+
+	var w := cols * cell_size
+	var d := rows * cell_size
+	var xf := []
+	for _c in 40:
+		var cx := _rng.randf_range(4.0, w - 4.0)
+		var cz := _rng.randf_range(4.0, d - 4.0)
+		for _p in _rng.randi_range(2, 5):
+			var px := cx + _rng.randf_range(-0.9, 0.9)
+			var pz := cz + _rng.randf_range(-0.9, 0.9)
+			var s := _rng.randf_range(0.5, 1.5)
+			xf.append(Transform3D(Basis(Vector3.UP, _rng.randf_range(0.0, TAU)).scaled(Vector3(s, s * 0.6, s)), Vector3(px, _ground_height(px, pz), pz)))
+	_make_plain_multimesh(mesh, xf)
+
+func _make_plain_multimesh(mesh: Mesh, xforms: Array) -> void:
+	if xforms.is_empty():
+		return
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = xforms.size()
+	for i in xforms.size():
+		mm.set_instance_transform(i, xforms[i])
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
 
 func _place_log(pos: Vector3, mat: Material) -> void:
 	var mi := MeshInstance3D.new()
@@ -639,11 +765,18 @@ func _scatter_props() -> void:
 	var ferns := _templates(["fern_02/fern_02_1k.gltf"])
 	var branches := _templates(["dry_branches_medium_01/dry_branches_medium_01_1k.gltf"])
 
-	# Rocks: solid obstacles → block the cell + a simple collider.
+	# The photoscan rocks ship a bright clean granite that pops out of the dark
+	# woods — knock them down to a dark mossy grey-green (keeps the texture detail,
+	# just darkens it) so they sit in the forest instead of glowing.
+	for r in rocks:
+		_tint_meshes(r, Color(0.34, 0.4, 0.34))
+
+	# Rocks: solid obstacles → block the cell + a simple collider. Wide size range
+	# (small stones to big boulders) and partially sunk into the ground.
 	if not rocks.is_empty():
 		var placed := 0
 		var tries := 0
-		while placed < 16 and tries < 240:
+		while placed < 22 and tries < 320:
 			tries += 1
 			var cell := Vector2i(_rng.randi_range(2, cols - 3), _rng.randi_range(2, rows - 3))
 			if _blocked.has(cell):
@@ -652,10 +785,10 @@ func _scatter_props() -> void:
 				continue
 			_block(cell)
 			var base := cell_to_world(cell)
+			var s := _rng.randf_range(0.5, 2.2)
 			var body := StaticBody3D.new()
-			body.position = Vector3(base.x, _ground_height(base.x, base.z), base.z)
-			body.rotation.y = _rng.randf_range(0.0, TAU)
-			var s := _rng.randf_range(0.7, 1.7)
+			body.position = Vector3(base.x, _ground_height(base.x, base.z) - 0.18 * s, base.z)  # sink in
+			body.rotation = Vector3(_rng.randf_range(-0.2, 0.2), _rng.randf_range(0.0, TAU), _rng.randf_range(-0.2, 0.2))
 			var vis: Node3D = rocks[_rng.randi() % rocks.size()].duplicate()
 			vis.scale = Vector3(s, s, s)
 			_no_shadow(vis)
@@ -670,9 +803,9 @@ func _scatter_props() -> void:
 			placed += 1
 
 	# Visual-only ground clutter (no collision / no grid block).
-	_scatter_visual(logs, 18, 0.9, 1.5)
-	_scatter_visual(ferns, 55, 0.7, 1.6)
-	_scatter_visual(branches, 30, 0.8, 1.7)
+	_scatter_visual(logs, 26, 0.9, 1.6)
+	_scatter_visual(ferns, 85, 0.6, 1.7)
+	_scatter_visual(branches, 45, 0.8, 1.7)
 
 	for t in rocks + logs + ferns + branches:
 		t.free()   # templates done — duplicates own their own copies
@@ -707,6 +840,18 @@ func _no_shadow(n: Node) -> void:
 		(n as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	for c in n.get_children():
 		_no_shadow(c)
+
+## Multiply every mesh material's albedo by a tint (darken/recolour a loaded
+## model in place) while keeping its texture detail.
+func _tint_meshes(n: Node, tint: Color) -> void:
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh:
+		var mi := n as MeshInstance3D
+		for i in mi.mesh.get_surface_count():
+			var m := mi.get_active_material(i)
+			if m is BaseMaterial3D:
+				(m as BaseMaterial3D).albedo_color = tint
+	for c in n.get_children():
+		_tint_meshes(c, tint)
 
 ## A dark wooden cabin behind the spawn — your starting landmark. Its door faces
 ## the player (who spawns just outside it, looking into the woods). Footprint
