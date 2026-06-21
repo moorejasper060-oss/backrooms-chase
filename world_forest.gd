@@ -69,17 +69,23 @@ void fragment() {
 const SKY_SHADER := "
 shader_type sky;
 uniform vec3 moon_dir;
+uniform float day = 0.0;   // 0 = night, 1 = clear daytime (testing toggle)
 void sky() {
 	vec3 d = normalize(EYEDIR);
 	float up = clamp(d.y, 0.0, 1.0);
-	vec3 col = mix(vec3(0.02, 0.03, 0.055), vec3(0.0, 0.006, 0.02), up);
 	float md = dot(d, normalize(moon_dir));
-	col += vec3(0.9, 0.93, 1.0) * smoothstep(0.9965, 0.9978, md);    // moon disc
-	col += vec3(0.35, 0.45, 0.7) * smoothstep(0.95, 1.0, md) * 0.6;  // soft halo
+	// Night sky: deep blue gradient + moon + halo + sparse stars.
+	vec3 night = mix(vec3(0.02, 0.03, 0.055), vec3(0.0, 0.006, 0.02), up);
+	night += vec3(0.9, 0.93, 1.0) * smoothstep(0.9965, 0.9978, md);
+	night += vec3(0.35, 0.45, 0.7) * smoothstep(0.95, 1.0, md) * 0.6;
 	vec2 g = floor((d.xz / max(abs(d.y), 0.2)) * 30.0);
 	float h = fract(sin(dot(g, vec2(12.9898, 78.233))) * 43758.5453);
-	col += vec3(0.7) * step(0.9975, h) * up;                         // sparse stars
-	COLOR = col;
+	night += vec3(0.7) * step(0.9975, h) * up;
+	// Day sky: bright blue gradient + a sun where the light comes from.
+	vec3 dayc = mix(vec3(0.62, 0.74, 0.9), vec3(0.2, 0.45, 0.82), up);
+	dayc += vec3(1.0, 0.96, 0.85) * smoothstep(0.9975, 0.9991, md) * 3.0;  // sun disc
+	dayc += vec3(1.0, 0.92, 0.72) * smoothstep(0.96, 1.0, md) * 0.5;       // sun glow
+	COLOR = mix(night, dayc, day);
 }
 "
 
@@ -102,6 +108,10 @@ var _dread := 0.0
 var _lantern: OmniLight3D    # warm cabin beacon; flickers like a flame
 var _time := 0.0
 var _quality := 2            # mirrors Settings.quality (0 low, 1 med, 2 high)
+var _env: Environment        # for the day/night testing toggle (T)
+var _moon: DirectionalLight3D
+var _sky_mat: ShaderMaterial
+var _daytime := false
 
 # Navigation grid (open forest: every non-blocked cell connects to its
 # 4 neighbours; trees/cabin block cells). Same interface the monster expects.
@@ -211,6 +221,7 @@ func _setup_environment() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
+	_env = env
 
 	# The moon — a dim, cold directional light raking across the canopy.
 	var moon := DirectionalLight3D.new()
@@ -220,6 +231,7 @@ func _setup_environment() -> void:
 	moon.shadow_enabled = true
 	moon.directional_shadow_max_distance = 30.0 if _quality == 0 else 50.0
 	add_child(moon)
+	_moon = moon
 
 	# Night sky with a real moon + halo + stars, drawn in the sky shader so the
 	# distance fog can't erase it; aligned with the moonlight direction.
@@ -231,6 +243,7 @@ func _setup_environment() -> void:
 	sky_mat.set_shader_parameter("moon_dir", moon.transform.basis.z)
 	sky.sky_material = sky_mat
 	env.sky = sky
+	_sky_mat = sky_mat
 
 ## Real CC0 PBR textures (Poly Haven), triplanar world-mapped so they tile over
 ## any surface. Loaded at runtime from textures/ via Image.load (no import step).
@@ -1258,7 +1271,7 @@ func _on_escaped() -> void:
 func _add_hud() -> void:
 	var layer := CanvasLayer.new()
 	var controls := Label.new()
-	controls.text = "WASD: move   Shift: sprint   F: flashlight   Esc: menu"
+	controls.text = "WASD: move   Shift: sprint   F: flashlight   T: day/night   Esc: menu"
 	controls.position = Vector2(16, 16)
 	controls.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	layer.add_child(controls)
@@ -1389,9 +1402,40 @@ func _end_game(message: String, color: Color, freeze_player: bool) -> void:
 			p.set_process_unhandled_input(false)
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Testing toggle: T flips between the night horror look and clear daytime.
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_T:
+		_set_daytime(not _daytime)
 	if _game_over and (event.is_action_pressed("ui_accept") \
 			or (event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R)):
 		get_tree().reload_current_scene()
+
+## Testing-only: flip the whole forest between the night horror look and a bright
+## clear day (sun + blue sky + minimal fog) so scenery detail is easy to inspect.
+## Toggled with T; the game always starts at night.
+func _set_daytime(on: bool) -> void:
+	_daytime = on
+	if _sky_mat:
+		_sky_mat.set_shader_parameter("day", 1.0 if on else 0.0)
+	if _env == null or _moon == null:
+		return
+	if on:
+		_moon.light_color = Color(1.0, 0.96, 0.88)
+		_moon.light_energy = 1.7
+		_env.ambient_light_color = Color(0.55, 0.66, 0.82)
+		_env.ambient_light_energy = 1.05
+		_env.fog_light_color = Color(0.7, 0.8, 0.92)
+		_env.fog_density = 0.0035
+		_env.volumetric_fog_enabled = false
+		_env.adjustment_saturation = 1.05
+	else:
+		_moon.light_color = Color(0.5, 0.6, 0.92)
+		_moon.light_energy = 0.32
+		_env.ambient_light_color = Color(0.3, 0.38, 0.55)
+		_env.ambient_light_energy = 0.022
+		_env.fog_light_color = Color(0.035, 0.05, 0.08)
+		_env.fog_density = 0.014
+		_env.volumetric_fog_enabled = _quality >= 1
+		_env.adjustment_saturation = 0.92
 
 # --- Navigation interface (used verbatim by the monster) --------------------
 
