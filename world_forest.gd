@@ -89,6 +89,7 @@ var _post_mat: ShaderMaterial
 var _dread := 0.0
 var _lantern: OmniLight3D    # warm cabin beacon; flickers like a flame
 var _time := 0.0
+var _quality := 2            # mirrors Settings.quality (0 low, 1 med, 2 high)
 
 # Navigation grid (open forest: every non-blocked cell connects to its
 # 4 neighbours; trees/cabin block cells). Same interface the monster expects.
@@ -113,6 +114,7 @@ func _ready() -> void:
 	_noise.seed = _rng.randi()
 	_noise.frequency = 0.012
 	_noise.fractal_octaves = 3
+	_apply_quality()
 	_setup_environment()
 	_make_materials()
 	_make_ground()
@@ -139,6 +141,22 @@ func _ready() -> void:
 
 # --- Atmosphere -------------------------------------------------------------
 
+## Scale the heaviest costs (volumetric fog, grass + tree density) to the
+## player's graphics-quality setting. Volumetric fog dominates GPU cost, so Low
+## drops it entirely; density counts shrink to thin the alpha-billboard overdraw
+## that tanks FPS when looking across the whole forest.
+func _apply_quality() -> void:
+	_quality = Settings.quality
+	match _quality:
+		0:  # Low — favour FPS
+			grass_count = int(grass_count * 0.30)
+			tree_count = int(tree_count * 0.55)
+		1:  # Medium — balanced
+			grass_count = int(grass_count * 0.65)
+			tree_count = int(tree_count * 0.85)
+		_:  # High — full density (volfog handled in _setup_environment)
+			pass
+
 func _setup_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -151,14 +169,20 @@ func _setup_environment() -> void:
 	env.fog_light_color = Color(0.035, 0.05, 0.08)
 	env.fog_density = 0.04
 	env.fog_sky_affect = 0.25                                 # keep the sky/moon visible above the fog
-	env.volumetric_fog_enabled = true
-	env.volumetric_fog_density = 0.016
+	# Volumetric fog is the dominant GPU cost — scale it to graphics quality:
+	# Low turns it off, Medium runs it thinner/shorter, High keeps the full mist.
+	env.volumetric_fog_enabled = _quality >= 1
+	if _quality == 1:
+		env.volumetric_fog_density = 0.010
+		env.volumetric_fog_length = 26.0
+	else:
+		env.volumetric_fog_density = 0.016
+		env.volumetric_fog_length = 40.0
 	env.volumetric_fog_albedo = Color(0.5, 0.6, 0.8)
 	env.volumetric_fog_emission = Color(0.007, 0.01, 0.018)
-	env.volumetric_fog_length = 40.0
 	env.volumetric_fog_detail_spread = 2.0
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.ssao_enabled = true
+	env.ssao_enabled = _quality >= 1     # screen-space AO is a real cost — off on Low
 	env.ssao_radius = 2.0
 	env.ssao_intensity = 1.6
 	env.glow_enabled = true
@@ -179,7 +203,7 @@ func _setup_environment() -> void:
 	moon.light_energy = 0.32
 	moon.rotation_degrees = Vector3(-48.0, 38.0, 0.0)
 	moon.shadow_enabled = true
-	moon.directional_shadow_max_distance = 50.0
+	moon.directional_shadow_max_distance = 30.0 if _quality == 0 else 50.0
 	add_child(moon)
 
 	# Night sky with a real moon + halo + stars, drawn in the sky shader so the

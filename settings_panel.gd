@@ -57,6 +57,16 @@ func _ready() -> void:
 	diff.item_selected.connect(_on_diff)
 	v.add_child(diff)
 
+	v.add_child(_label("Graphics Quality"))
+	var qual := OptionButton.new()
+	qual.add_item("Low", 0)
+	qual.add_item("Medium", 1)
+	qual.add_item("High", 2)
+	qual.selected = Settings.quality
+	qual.item_selected.connect(_on_quality)
+	v.add_child(qual)
+	v.add_child(_hint("Lower = more FPS in the forest (less fog, sparser woods). Applies on a new game."))
+
 	v.add_child(_spacer(8))
 	var back := Button.new()
 	back.text = "Back"
@@ -75,6 +85,14 @@ func _spacer(h: int) -> Control:
 	c.custom_minimum_size = Vector2(0, h)
 	return c
 
+func _hint(t: String) -> Label:
+	var l := Label.new()
+	l.text = t
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.add_theme_font_size_override("font_size", 12)
+	l.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	return l
+
 func _on_volume(val: float) -> void:
 	Settings.master_volume = val
 	Settings.apply_audio()
@@ -84,6 +102,9 @@ func _on_sens(val: float) -> void:
 
 func _on_diff(idx: int) -> void:
 	Settings.difficulty = idx
+
+func _on_quality(idx: int) -> void:
+	Settings.quality = idx
 
 func _on_back() -> void:
 	Settings.save_settings()
