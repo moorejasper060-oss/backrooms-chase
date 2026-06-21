@@ -59,6 +59,7 @@ var _anim_t := 0.0
 var _model: Node3D
 var _anim: AnimationPlayer
 var _anim_clip := ""   # the single locomotion clip we re-time for idle/walk/sprint
+var _eye_mat: StandardMaterial3D   # the two eye-glimmers; flares red on lock-on
 
 # Anti-stuck
 var _last_pos := Vector3.ZERO
@@ -308,6 +309,82 @@ func _build_body() -> void:
 				a.loop_mode = Animation.LOOP_LINEAR
 			_anim.play(_anim_clip)
 
+	_add_face()
+	_add_aura()
+
+## Two faint, cold eye-glimmers — the only feature on the blank black head.
+## They ride the body (not the bobbing skull, which is good enough in the dark)
+## and flare a sick red the instant it locks onto you. Kept dim so they read as
+## eerie glints in the fog, never headlights.
+func _add_face() -> void:
+	var eyes := Node3D.new()
+	eyes.position = Vector3(0.0, 2.18, -0.16)   # head height, on the front (-Z) face
+	add_child(eyes)
+	_eye_mat = StandardMaterial3D.new()
+	_eye_mat.albedo_color = Color(0.015, 0.015, 0.02)
+	_eye_mat.emission_enabled = true
+	_eye_mat.emission = Color(0.6, 0.66, 0.78)
+	_eye_mat.emission_energy_multiplier = 1.5
+	for sx in [-0.06, 0.06]:
+		var e := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = 0.032
+		sm.height = 0.064
+		sm.radial_segments = 8
+		sm.rings = 4
+		e.mesh = sm
+		e.material_override = _eye_mat
+		e.position = Vector3(sx, 0.0, 0.0)
+		e.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		eyes.add_child(e)
+
+## A drifting haze that clings to the entity so it dissolves in and out of the
+## fog — a soft-particle GPU emitter wrapped around the body in local space.
+func _add_aura() -> void:
+	var p := GPUParticles3D.new()
+	p.amount = 16
+	p.lifetime = 5.0
+	p.preprocess = 4.0
+	p.local_coords = true                       # the shroud travels with it
+	p.position = Vector3(0.0, 1.1, 0.0)
+	p.visibility_aabb = AABB(Vector3(-2, -1.5, -2), Vector3(4, 5, 4))
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(0.4, 1.2, 0.4)
+	pm.direction = Vector3(0, 1, 0)
+	pm.gravity = Vector3(0.0, 0.05, 0.0)        # drift gently upward
+	pm.initial_velocity_min = 0.02
+	pm.initial_velocity_max = 0.12
+	pm.scale_min = 0.5
+	pm.scale_max = 1.3
+	p.process_material = pm
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_texture = _make_soft_particle_tex()
+	mat.albedo_color = Color(0.26, 0.31, 0.43, 0.05)   # faint dark veil, not a glow
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.billboard_keep_scale = true
+	mat.disable_receive_shadows = true
+	var quad := QuadMesh.new()
+	quad.size = Vector2(1.0, 1.0)
+	quad.material = mat
+	p.draw_pass_1 = quad
+	add_child(p)
+
+## Soft round particle sprite (white core fading to transparent), built once.
+func _make_soft_particle_tex() -> ImageTexture:
+	var S := 64
+	var img := Image.create(S, S, false, Image.FORMAT_RGBA8)
+	for y in S:
+		for x in S:
+			var dx := (float(x) - S * 0.5) / (S * 0.5)
+			var dy := (float(y) - S * 0.5) / (S * 0.5)
+			var a := clampf(1.0 - sqrt(dx * dx + dy * dy), 0.0, 1.0)
+			img.set_pixel(x, y, Color(1, 1, 1, a * a))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
 func _recolor(n: Node, mat: Material) -> void:
 	if n is MeshInstance3D and (n as MeshInstance3D).mesh:
 		for i in (n as MeshInstance3D).mesh.get_surface_count():
@@ -395,3 +472,11 @@ func _update_anim() -> void:
 		_anim.speed_scale = 1.0
 	else:
 		_anim.speed_scale = 0.12
+	# Eyes: cold dim glints while it prowls, a furious red flare once it has you.
+	if _eye_mat:
+		if _state == State.CHASE:
+			_eye_mat.emission = Color(0.95, 0.22, 0.16)
+			_eye_mat.emission_energy_multiplier = 3.8
+		else:
+			_eye_mat.emission = Color(0.6, 0.66, 0.78)
+			_eye_mat.emission_energy_multiplier = 1.5
