@@ -120,6 +120,7 @@ func _ready() -> void:
 	_make_ground()
 	_scatter_grass()        # dense ground-cover so the floor never reads as flat
 	_scatter_trees()
+	_build_perimeter_walls()  # invisible barrier so you can't slip off the map edge
 	_scatter_decoration()   # primitive filler bushes
 	_scatter_props()        # real CC0 rocks / logs / ferns / branches
 	_build_cabin()          # start landmark (blocks its footprint cells)
@@ -451,6 +452,33 @@ func _make_multimesh(mesh: Mesh, xforms: Array) -> void:
 	mmi.multimesh = mm
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mmi)
+
+## Invisible containment wall just inside the dense border ring — the border
+## trees have only thin trunk colliders with walkable gaps, so without this you
+## can squeeze through and walk off the edge of the terrain into the void.
+func _build_perimeter_walls() -> void:
+	var w := cols * cell_size
+	var lo := 2.0
+	var hi := w - 2.0
+	var span := hi - lo
+	var h := 12.0
+	var t := 1.0
+	var cy := 4.0
+	var mid := (lo + hi) * 0.5
+	_wall(Vector3(span, h, t), Vector3(mid, cy, lo))
+	_wall(Vector3(span, h, t), Vector3(mid, cy, hi))
+	_wall(Vector3(t, h, span), Vector3(lo, cy, mid))
+	_wall(Vector3(t, h, span), Vector3(hi, cy, mid))
+
+func _wall(size: Vector3, pos: Vector3) -> void:
+	var body := StaticBody3D.new()
+	body.position = pos
+	var col := CollisionShape3D.new()
+	var sh := BoxShape3D.new()
+	sh.size = size
+	col.shape = sh
+	body.add_child(col)
+	add_child(body)
 
 func _tree_collider(pos: Vector3) -> void:
 	var body := StaticBody3D.new()
@@ -899,13 +927,12 @@ func _spawn_monster() -> void:
 	_monster.caught.connect(_on_player_caught)
 	_monster.spotted.connect(_on_spotted)
 	add_child(_monster)
-	# Dense woods break line-of-sight too easily, so make it relentless: hears you
-	# through the trees, hunts your last position far longer, and is a touch faster
-	# than your walk (you must sprint — and manage stamina — to break away).
-	_monster.hear_radius = maxf(_monster.hear_radius, 8.5)
-	_monster.give_up_time = maxf(_monster.give_up_time, 11.0)
-	_monster.sight_range = maxf(_monster.sight_range, 30.0)
-	_monster.chase_speed += 0.6
+	# Forest tuning: persistent enough to be scary, but escapable. Breaking line of
+	# sight and putting trees between you lets it lose you in ~7s, and it never
+	# outruns your sprint (no chase-speed bonus) — so a clean dash gets away.
+	_monster.hear_radius = maxf(_monster.hear_radius, 6.5)
+	_monster.give_up_time = maxf(_monster.give_up_time, 7.0)
+	_monster.sight_range = maxf(_monster.sight_range, 24.0)
 
 func _spawn_car() -> void:
 	_car = CAR_SCRIPT.new()
