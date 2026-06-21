@@ -5,16 +5,23 @@ extends Node3D
 ## systems as the Backrooms level (world.gd, left intact) so the monster, player,
 ## pickups and escape flow work unchanged; only the generated world differs.
 
-@export var cols := 40
-@export var rows := 40
-@export var cell_size := 3.0          # 40 * 3 = 120 m of forest
+@export var cols := 64
+@export var rows := 64
+@export var cell_size := 3.0          # 64 * 3 = 192 m of forest (a big map)
 @export var part_count := 5           # car parts to find
 @export var battery_count := 3        # flashlight batteries scattered (fewer items)
-@export var tree_count := 850         # dense interior trees (cheap billboards — make it a FOREST)
-@export var bush_count := 170         # filler bushes (varied colour; ferns/mushrooms/pebbles on top)
+@export var tree_count := 1700        # dense interior trees (real 3D, chunked for culling)
+@export var bush_count := 320         # filler bushes (varied colour; ferns/mushrooms/pebbles on top)
 @export var log_count := 0            # replaced by real Poly Haven fallen logs
-@export var grass_count := 6000       # GPU-instanced grass tufts covering the forest floor
+@export var grass_count := 16000      # GPU-instanced grass tufts (chunked + distance-culled)
 @export var forest_seed := 0          # 0 = random each run
+
+# Instances are bucketed into a CHUNK_DIV x CHUNK_DIV grid of MultiMeshInstances
+# so Godot frustum-culls whole chunks behind/around the camera — essential for a
+# big, dense map. Grass/detail chunks also distance-cull (visibility_range).
+const CHUNK_DIV := 10
+const GRASS_VIEW := 48.0              # grass/detail beyond this many metres is culled
+const TREE_VIEW := 95.0               # whole tree chunks beyond this cull (fog/mountains hide the edge)
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
 const MONSTER_SCENE := preload("res://monster.tscn")
@@ -168,8 +175,8 @@ func _setup_environment() -> void:
 	# Lighter fog so the forest is visible, but the night is darker overall.
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.035, 0.05, 0.08)
-	env.fog_density = 0.04
-	env.fog_sky_affect = 0.25                                 # keep the sky/moon visible above the fog
+	env.fog_density = 0.014                                   # thinner so the big map + mountains read
+	env.fog_sky_affect = 0.2                                  # keep the sky/moon/peaks visible above the fog
 	# Volumetric fog is the dominant GPU cost — scale it to graphics quality:
 	# Low turns it off, Medium runs it thinner/shorter, High keeps the full mist.
 	env.volumetric_fog_enabled = _quality >= 1
@@ -364,36 +371,23 @@ func _build_grass_mesh() -> ArrayMesh:
 	mesh.surface_set_material(0, mat)
 	return mesh
 
-## Carpet the walkable forest with grass tufts in a single GPU-instanced draw
-## call. Per-instance yaw / scale / green-tint variation keeps it from tiling.
+## Carpet the walkable forest with grass tufts. Chunked + distance-culled so a
+## big map can carry far more total grass while only the nearby chunks render.
 func _scatter_grass() -> void:
 	if grass_count <= 0:
 		return
-	var mesh := _build_grass_mesh()
 	var w := cols * cell_size
 	var d := rows * cell_size
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = true
-	mm.mesh = mesh
-	mm.instance_count = grass_count
-	for i in grass_count:
+	var xf := []
+	for _i in grass_count:
 		var x := _rng.randf_range(3.0, w - 3.0)
 		var z := _rng.randf_range(3.0, d - 3.0)
 		var pos := Vector3(x, _ground_height(x, z) - 0.05, z)
 		var yaw := _rng.randf_range(0.0, TAU)
 		var s := _rng.randf_range(0.7, 1.7)
 		var sy := s * _rng.randf_range(0.8, 1.6)
-		var b := Basis(Vector3.UP, yaw).scaled(Vector3(s, sy, s))
-		mm.set_instance_transform(i, Transform3D(b, pos))
-		mm.set_instance_color(i, Color(
-			_rng.randf_range(0.55, 1.0),
-			_rng.randf_range(0.7, 1.0),
-			_rng.randf_range(0.4, 0.8)))
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(mmi)
+		xf.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, sy, s)), pos))
+	_chunked_multimesh(_build_grass_mesh(), xf, "grass", GRASS_VIEW)
 
 # --- Forest generation ------------------------------------------------------
 
@@ -432,10 +426,10 @@ func _scatter_trees() -> void:
 		_add_tree_at(x, z, conifer_x, broadleaf_x, colliders, 0.4)
 		placed += 1
 
-	# Two real-3D species, each GPU-instanced → genuine volume from every angle
-	# (not flat billboards) in just a couple of draw calls.
-	_make_tree_multimesh(_build_conifer_mesh(), conifer_x)
-	_make_tree_multimesh(_build_broadleaf_mesh(), broadleaf_x)
+	# Two real-3D species, each chunked + GPU-instanced → genuine volume from every
+	# angle, with whole chunks culling when they leave the view.
+	_chunked_multimesh(_build_conifer_mesh(), conifer_x, "tree", TREE_VIEW)
+	_chunked_multimesh(_build_broadleaf_mesh(), broadleaf_x, "tree", TREE_VIEW)
 	for pos in colliders:
 		_tree_collider(pos)
 
@@ -452,24 +446,45 @@ func _add_tree_at(x: float, z: float, conifer_x: Array, broadleaf_x: Array, coll
 		conifer_x.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(sc, sc * _rng.randf_range(0.9, 1.3), sc)), pos))
 	colliders.append(pos)
 
-## Tree MultiMesh with per-instance colour so each tree is tinted a little
-## differently (darker / greener / browner) — kills the cloned-stamp look.
-func _make_tree_multimesh(mesh: Mesh, xforms: Array) -> void:
+## Bucket instances into a CHUNK_DIV x CHUNK_DIV grid of MultiMeshInstances so
+## chunks behind/around the camera frustum-cull away (vital on a big map).
+## tint: "none" | "grass" | "tree" picks the per-instance colour scheme.
+## vis_range > 0 also distance-culls the chunk (grass/detail near the player only).
+func _chunked_multimesh(mesh: Mesh, xforms: Array, tint: String, vis_range: float) -> void:
 	if xforms.is_empty():
 		return
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = true
-	mm.mesh = mesh
-	mm.instance_count = xforms.size()
-	for i in xforms.size():
-		mm.set_instance_transform(i, xforms[i])
-		var v := _rng.randf_range(0.72, 1.08)
-		mm.set_instance_color(i, Color(v * _rng.randf_range(0.85, 1.0), v, v * _rng.randf_range(0.78, 0.95)))
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(mmi)
+	var cs := (cols * cell_size) / float(CHUNK_DIV)
+	var buckets := {}
+	for xf in xforms:
+		var o: Vector3 = xf.origin
+		var key := Vector2i(clampi(int(o.x / cs), 0, CHUNK_DIV - 1), clampi(int(o.z / cs), 0, CHUNK_DIV - 1))
+		if not buckets.has(key):
+			buckets[key] = []
+		buckets[key].append(xf)
+	var use_col := tint != "none"
+	for key in buckets:
+		var arr: Array = buckets[key]
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = use_col
+		mm.mesh = mesh
+		mm.instance_count = arr.size()
+		for i in arr.size():
+			mm.set_instance_transform(i, arr[i])
+			if use_col:
+				mm.set_instance_color(i, _tint_color(tint))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		if vis_range > 0.0:
+			mmi.visibility_range_end = vis_range
+		add_child(mmi)
+
+func _tint_color(kind: String) -> Color:
+	if kind == "grass":
+		return Color(_rng.randf_range(0.55, 1.0), _rng.randf_range(0.7, 1.0), _rng.randf_range(0.4, 0.8))
+	var v := _rng.randf_range(0.72, 1.08)   # "tree"
+	return Color(v * _rng.randf_range(0.85, 1.0), v, v * _rng.randf_range(0.78, 0.95))
 
 ## Invisible containment wall just inside the dense border ring — the border
 ## trees have only thin trunk colliders with walkable gaps, so without this you
@@ -654,7 +669,7 @@ func _scatter_mushrooms() -> void:
 	for sp in species:
 		var mesh := _build_mushroom_mesh(sp["cap"], sp["glow"])
 		var xf := []
-		for _c in 16:
+		for _c in 34:
 			var cx := _rng.randf_range(4.0, w - 4.0)
 			var cz := _rng.randf_range(4.0, d - 4.0)
 			for _m in _rng.randi_range(2, 5):
@@ -662,7 +677,7 @@ func _scatter_mushrooms() -> void:
 				var mz := cz + _rng.randf_range(-0.6, 0.6)
 				var s := _rng.randf_range(0.7, 1.6)
 				xf.append(Transform3D(Basis(Vector3.UP, _rng.randf_range(0.0, TAU)).scaled(Vector3(s, s, s)), Vector3(mx, _ground_height(mx, mz), mz)))
-		_make_plain_multimesh(mesh, xf)
+		_chunked_multimesh(mesh, xf, "none", GRASS_VIEW)
 
 func _build_mushroom_mesh(cap_color: Color, glow: float) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
@@ -718,7 +733,7 @@ func _scatter_pebbles() -> void:
 	var w := cols * cell_size
 	var d := rows * cell_size
 	var xf := []
-	for _c in 40:
+	for _c in 90:
 		var cx := _rng.randf_range(4.0, w - 4.0)
 		var cz := _rng.randf_range(4.0, d - 4.0)
 		for _p in _rng.randi_range(2, 5):
@@ -726,21 +741,7 @@ func _scatter_pebbles() -> void:
 			var pz := cz + _rng.randf_range(-0.9, 0.9)
 			var s := _rng.randf_range(0.5, 1.5)
 			xf.append(Transform3D(Basis(Vector3.UP, _rng.randf_range(0.0, TAU)).scaled(Vector3(s, s * 0.6, s)), Vector3(px, _ground_height(px, pz), pz)))
-	_make_plain_multimesh(mesh, xf)
-
-func _make_plain_multimesh(mesh: Mesh, xforms: Array) -> void:
-	if xforms.is_empty():
-		return
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = mesh
-	mm.instance_count = xforms.size()
-	for i in xforms.size():
-		mm.set_instance_transform(i, xforms[i])
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(mmi)
+	_chunked_multimesh(mesh, xf, "none", GRASS_VIEW)
 
 func _place_log(pos: Vector3, mat: Material) -> void:
 	var mi := MeshInstance3D.new()
@@ -776,7 +777,7 @@ func _scatter_props() -> void:
 	if not rocks.is_empty():
 		var placed := 0
 		var tries := 0
-		while placed < 22 and tries < 320:
+		while placed < 46 and tries < 700:
 			tries += 1
 			var cell := Vector2i(_rng.randi_range(2, cols - 3), _rng.randi_range(2, rows - 3))
 			if _blocked.has(cell):
@@ -802,10 +803,10 @@ func _scatter_props() -> void:
 			add_child(body)
 			placed += 1
 
-	# Visual-only ground clutter (no collision / no grid block).
-	_scatter_visual(logs, 26, 0.9, 1.6)
-	_scatter_visual(ferns, 85, 0.6, 1.7)
-	_scatter_visual(branches, 45, 0.8, 1.7)
+	# Visual-only ground clutter (no collision / no grid block) — scaled for the big map.
+	_scatter_visual(logs, 55, 0.9, 1.6)
+	_scatter_visual(ferns, 190, 0.6, 1.7)
+	_scatter_visual(branches, 95, 0.8, 1.7)
 
 	for t in rocks + logs + ferns + branches:
 		t.free()   # templates done — duplicates own their own copies
