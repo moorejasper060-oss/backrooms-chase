@@ -13,6 +13,7 @@ extends Node3D
 @export var tree_count := 850         # dense interior trees (cheap billboards — make it a FOREST)
 @export var bush_count := 120         # primitive filler bushes (real ferns/logs added on top)
 @export var log_count := 0            # replaced by real Poly Haven fallen logs
+@export var grass_count := 6000       # GPU-instanced grass tufts covering the forest floor
 @export var forest_seed := 0          # 0 = random each run
 
 const PICKUP_SCENE := preload("res://pickup.tscn")
@@ -113,6 +114,7 @@ func _ready() -> void:
 	_setup_environment()
 	_make_materials()
 	_make_ground()
+	_scatter_grass()        # dense ground-cover so the floor never reads as flat
 	_scatter_trees()
 	_scatter_decoration()   # primitive filler bushes
 	_scatter_props()        # real CC0 rocks / logs / ferns / branches
@@ -255,14 +257,112 @@ func _make_ground() -> void:
 			var p10 := Vector3(x1, _ground_height(x1, z0), z0)
 			var p01 := Vector3(x0, _ground_height(x0, z1), z1)
 			var p11 := Vector3(x1, _ground_height(x1, z1), z1)
-			st.add_vertex(p00); st.add_vertex(p01); st.add_vertex(p11)
-			st.add_vertex(p00); st.add_vertex(p11); st.add_vertex(p10)
+			# Wind front-faces UP (CCW from above) so the terrain isn't
+			# back-face culled into a void — this also points generate_normals()
+			# skyward for correct lighting.
+			st.add_vertex(p00); st.add_vertex(p11); st.add_vertex(p01)
+			st.add_vertex(p00); st.add_vertex(p10); st.add_vertex(p11)
 	st.generate_normals()
 	var mi := MeshInstance3D.new()
 	mi.mesh = st.commit()
 	mi.material_override = _mat_ground
 	add_child(mi)
 	mi.create_trimesh_collision()
+
+# --- Ground cover (grass) ---------------------------------------------------
+
+## A procedural grass-tuft texture: several green blades on transparent, drawn
+## once at startup so we need no asset files. Used as an alpha-scissor cutout on
+## crossed quads, then GPU-instanced thousands of times to carpet the floor.
+func _make_grass_texture() -> ImageTexture:
+	var W := 96
+	var H := 128
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var br := RandomNumberGenerator.new()
+	br.seed = 92731
+	var blades := 11
+	for _b in blades:
+		var base_x := br.randf_range(W * 0.12, W * 0.88)
+		var height := br.randf_range(H * 0.42, H * 0.96)
+		var lean := br.randf_range(-W * 0.22, W * 0.22)
+		var base_col := Color(0.07, 0.17, 0.04)
+		var tip_col := Color(0.34, 0.55, 0.14)
+		var hue := br.randf_range(-0.05, 0.07)
+		var steps := int(height)
+		for s in steps:
+			var t := float(s) / float(maxi(steps, 1))   # 0 at base, 1 at tip
+			var y := H - 1 - s                           # grow upward
+			var cx := base_x + lean * (t * t)            # curve toward the tip
+			var half_w := lerpf(2.8, 0.5, t)
+			var col := base_col.lerp(tip_col, t)
+			col.g = clampf(col.g + hue, 0.0, 1.0)
+			for x in range(maxi(0, int(cx - half_w)), mini(W, int(cx + half_w) + 1)):
+				if y < 0 or y >= H:
+					continue
+				var edge := 1.0 - absf((float(x) + 0.5 - cx) / (half_w + 0.5))
+				var a := clampf(edge * 1.7, 0.0, 1.0)
+				if a > 0.05 and a > img.get_pixel(x, y).a:
+					img.set_pixel(x, y, Color(col.r, col.g, col.b, a))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+## Grass tuft = three crossed quads (volume from any angle), pivoted at the base
+## so it sits on the ground. One material reused across the whole MultiMesh.
+func _build_grass_mesh() -> ArrayMesh:
+	var w := 0.75
+	var h := 0.55
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = _make_grass_texture()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mat.alpha_scissor_threshold = 0.4
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.vertex_color_use_as_albedo = true     # MultiMesh per-instance tint
+	mat.albedo_color = Color(0.85, 0.9, 0.75)
+	mat.roughness = 1.0
+	mat.backlight_enabled = true              # moon/flashlight bleeds through blades
+	mat.backlight = Color(0.12, 0.18, 0.07)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var q := QuadMesh.new()
+	q.size = Vector2(w, h)
+	for ang in [0.0, PI / 3.0, 2.0 * PI / 3.0]:
+		st.append_from(q, 0, Transform3D(Basis(Vector3.UP, ang), Vector3(0.0, h * 0.5, 0.0)))
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, st.commit_to_arrays())
+	mesh.surface_set_material(0, mat)
+	return mesh
+
+## Carpet the walkable forest with grass tufts in a single GPU-instanced draw
+## call. Per-instance yaw / scale / green-tint variation keeps it from tiling.
+func _scatter_grass() -> void:
+	if grass_count <= 0:
+		return
+	var mesh := _build_grass_mesh()
+	var w := cols * cell_size
+	var d := rows * cell_size
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = mesh
+	mm.instance_count = grass_count
+	for i in grass_count:
+		var x := _rng.randf_range(3.0, w - 3.0)
+		var z := _rng.randf_range(3.0, d - 3.0)
+		var pos := Vector3(x, _ground_height(x, z) - 0.05, z)
+		var yaw := _rng.randf_range(0.0, TAU)
+		var s := _rng.randf_range(0.7, 1.7)
+		var sy := s * _rng.randf_range(0.8, 1.6)
+		var b := Basis(Vector3.UP, yaw).scaled(Vector3(s, sy, s))
+		mm.set_instance_transform(i, Transform3D(b, pos))
+		mm.set_instance_color(i, Color(
+			_rng.randf_range(0.55, 1.0),
+			_rng.randf_range(0.7, 1.0),
+			_rng.randf_range(0.4, 0.8)))
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
 
 # --- Forest generation ------------------------------------------------------
 
