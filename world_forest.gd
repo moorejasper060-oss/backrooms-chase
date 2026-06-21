@@ -23,6 +23,11 @@ const CHUNK_DIV := 10
 const GRASS_VIEW := 48.0              # grass/detail beyond this many metres is culled
 const TREE_VIEW := 95.0               # whole tree chunks beyond this cull (fog/mountains hide the edge)
 
+# A meandering river carved through the map (channel in the terrain + water mesh).
+const RIVER_HALF := 5.0               # half-width of the flat channel bottom
+const RIVER_BANK := 5.5               # bank slope width either side
+const RIVER_DEPTH := 1.7              # how deep the channel is cut (shallow — wadeable)
+
 const PICKUP_SCENE := preload("res://pickup.tscn")
 const MONSTER_SCENE := preload("res://monster.tscn")
 const CAR_SCRIPT := preload("res://car.gd")
@@ -125,6 +130,7 @@ func _ready() -> void:
 	_setup_environment()
 	_make_materials()
 	_make_ground()
+	_build_river()          # water mesh in the carved channel
 	_scatter_grass()        # dense ground-cover so the floor never reads as flat
 	_scatter_trees()
 	_build_perimeter_walls()  # invisible barrier so you can't slip off the map edge
@@ -274,7 +280,16 @@ func _ground_height(x: float, z: float) -> float:
 	var h := _noise.get_noise_2d(x, z) * GROUND_AMP
 	var sw := cell_to_world(_spawn_cell)
 	var flat := clampf((Vector2(x - sw.x, z - sw.z).length() - 6.0) / 11.0, 0.0, 1.0)
-	return h * flat
+	h *= flat
+	# Carve the meandering river channel into the terrain.
+	var dist := absf(x - _river_x(z))
+	h -= RIVER_DEPTH * (1.0 - smoothstep(RIVER_HALF, RIVER_HALF + RIVER_BANK, dist))
+	return h
+
+## River centreline X for a given Z — a gentle S winding down the map.
+func _river_x(z: float) -> float:
+	var w := cols * cell_size
+	return w * 0.5 + sin(z / w * TAU * 1.3) * (w * 0.16)
 
 ## Undulating 3D heightmap ground (real terrain, not a flat plane), triplanar-
 ## textured, with a trimesh collider the player/monster walk on.
@@ -424,6 +439,8 @@ func _scatter_trees() -> void:
 		var z := _rng.randf_range(7.0, d - 7.0)
 		if Vector2(x - sw.x, z - sw.z).length() < 9.0:
 			continue  # keep the spawn/cabin clearing open
+		if absf(x - _river_x(z)) < RIVER_HALF + RIVER_BANK + 1.0:
+			continue  # keep trees out of the river channel
 		_add_tree_at(x, z, conifer_x, broadleaf_x, colliders, 0.4)
 		placed += 1
 
@@ -584,6 +601,47 @@ func _tree_collider(pos: Vector3) -> void:
 	col.position = Vector3(0.0, 3.0, 0.0)
 	body.add_child(col)
 	add_child(body)
+
+## Water surface for the river — a strip of quads following the carved channel,
+## sitting just below the banks. Translucent, smooth and faintly lit so it catches
+## the moon/flashlight.
+func _build_river() -> void:
+	var d := rows * cell_size
+	var wh := RIVER_HALF * 0.9
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var step := 3.0
+	var z := 6.0
+	while z < d - 6.0:
+		var z2 := z + step
+		var rx0 := _river_x(z)
+		var rx1 := _river_x(z2)
+		var y0 := _water_y(z)
+		var y1 := _water_y(z2)
+		var l0 := Vector3(rx0 - wh, y0, z)
+		var r0 := Vector3(rx0 + wh, y0, z)
+		var l1 := Vector3(rx1 - wh, y1, z2)
+		var r1 := Vector3(rx1 + wh, y1, z2)
+		st.add_vertex(l0); st.add_vertex(r1); st.add_vertex(l1)
+		st.add_vertex(l0); st.add_vertex(r0); st.add_vertex(r1)
+		z = z2
+	st.generate_normals()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.04, 0.09, 0.13, 0.8)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.roughness = 0.08
+	mat.metallic = 0.35
+	mat.emission_enabled = true
+	mat.emission = Color(0.03, 0.06, 0.1)
+	mat.emission_energy_multiplier = 0.5
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+
+func _water_y(z: float) -> float:
+	return _ground_height(_river_x(z), z) + RIVER_DEPTH * 0.55
 
 ## Real-tree billboard: two crossed quads textured with a photo-scanned tree
 ## impostor (alpha-scissor cutout), GPU-instanced so the whole forest is ~one
