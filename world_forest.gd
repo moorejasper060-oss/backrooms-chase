@@ -87,6 +87,8 @@ var _audio: Node
 var _spot_cooldown := 0.0
 var _post_mat: ShaderMaterial
 var _dread := 0.0
+var _lantern: OmniLight3D    # warm cabin beacon; flickers like a flame
+var _time := 0.0
 
 # Navigation grid (open forest: every non-blocked cell connects to its
 # 4 neighbours; trees/cabin block cells). Same interface the monster expects.
@@ -689,8 +691,41 @@ func _build_cabin() -> void:
 	_sbox(cabin, Vector3(seg, wh, t), Vector3(-(0.6 + seg * 0.5), wh * 0.5, hd), wood)
 	_sbox(cabin, Vector3(seg, wh, t), Vector3(0.6 + seg * 0.5, wh * 0.5, hd), wood)
 	_sbox(cabin, Vector3(1.2, wh - 2.1, t), Vector3(0.0, wh - (wh - 2.1) * 0.5, hd), wood)  # lintel
-	# Flat overhanging roof
-	_sbox(cabin, Vector3(hw * 2.0 + 0.6, 0.2, hd * 2.0 + 0.6), Vector3(0.0, wh + 0.1, 0.0), roof_mat)
+	# Pitched gable roof — a triangular prism whose ridge runs front-to-back, so a
+	# pointed gable faces the player. Solid (no gaps), overhanging the walls.
+	var ridge_h := 1.6
+	var roof := MeshInstance3D.new()
+	var prism := PrismMesh.new()
+	prism.size = Vector3(hw * 2.0 + 0.7, ridge_h, hd * 2.0 + 0.7)
+	roof.mesh = prism
+	roof.material_override = roof_mat
+	roof.position = Vector3(0.0, wh + ridge_h * 0.5, 0.0)
+	# PrismMesh already points its apex up (+Y) and extrudes along Z, so the ridge
+	# runs front-to-back and a pointed gable faces the player — no rotation needed.
+	cabin.add_child(roof)
+
+	# A warm lantern by the door — a beacon to find your way back to base through
+	# the fog. Flickers in _process via _lantern.
+	var lantern_mat := StandardMaterial3D.new()
+	lantern_mat.albedo_color = Color(0.95, 0.65, 0.3)
+	lantern_mat.emission_enabled = true
+	lantern_mat.emission = Color(1.0, 0.72, 0.36)
+	lantern_mat.emission_energy_multiplier = 6.0
+	var lant := MeshInstance3D.new()
+	var lbox := BoxMesh.new()
+	lbox.size = Vector3(0.2, 0.32, 0.2)
+	lant.mesh = lbox
+	lant.material_override = lantern_mat
+	lant.position = Vector3(hw - 0.28, 1.95, hd + 0.14)
+	lant.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	cabin.add_child(lant)
+	_lantern = OmniLight3D.new()
+	_lantern.position = Vector3(hw - 0.28, 1.98, hd + 0.35)
+	_lantern.light_color = Color(1.0, 0.73, 0.4)
+	_lantern.light_energy = 2.6
+	_lantern.omni_range = 11.0
+	_lantern.shadow_enabled = false
+	cabin.add_child(_lantern)
 
 	# Block the footprint for navigation
 	for x in cols:
@@ -936,6 +971,9 @@ func _add_post_processing() -> void:
 
 func _process(delta: float) -> void:
 	_spot_cooldown = maxf(0.0, _spot_cooldown - delta)
+	_time += delta
+	if _lantern:
+		_lantern.light_energy = 2.4 + sin(_time * 6.3) * 0.16 + _rng.randf_range(-0.14, 0.14)
 	var target_dread := 0.0
 	if _monster and _player and not _game_over:
 		var dd := _monster.global_position.distance_to(_player.global_position)

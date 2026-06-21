@@ -33,15 +33,22 @@ func _build() -> void:
 	tire_mat.albedo_color = Color(0.04, 0.04, 0.045)
 	tire_mat.roughness = 0.9
 
-	# Chassis + cabin
-	_box(Vector3(2.0, 0.7, 4.3), Vector3(0.0, 0.65, 0.0), body_mat)
-	_box(Vector3(1.8, 0.75, 2.1), Vector3(0.0, 1.3, -0.25), body_mat)
-	# Windows (a dark band on the cabin)
-	_box(Vector3(1.82, 0.5, 1.7), Vector3(0.0, 1.45, -0.25), glass_mat)
+	# Lower chassis (forward = +Z, where the headlights are)
+	_box(Vector3(2.0, 0.55, 4.3), Vector3(0.0, 0.6, 0.0), body_mat)
+	# Hood + trunk decks (lower than the cabin so a greenhouse reads on top)
+	_box(Vector3(1.92, 0.16, 1.6), Vector3(0.0, 0.95, 1.3), body_mat)
+	_box(Vector3(1.92, 0.16, 1.0), Vector3(0.0, 0.95, -1.75), body_mat)
+	# Cabin greenhouse + roof
+	_box(Vector3(1.7, 0.6, 2.0), Vector3(0.0, 1.32, -0.35), body_mat)
+	_box(Vector3(1.56, 0.12, 1.6), Vector3(0.0, 1.66, -0.4), body_mat)
+	# Side windows (dark band) + raked windshield and rear window
+	_box(Vector3(1.74, 0.46, 1.9), Vector3(0.0, 1.4, -0.4), glass_mat)
+	_tilt_box(Vector3(1.6, 0.05, 0.95), Vector3(0.0, 1.4, 0.66), -38.0, glass_mat)
+	_tilt_box(Vector3(1.6, 0.05, 0.8), Vector3(0.0, 1.42, -1.42), 36.0, glass_mat)
 	# Wheels
 	for sx in [-1.0, 1.0]:
 		for sz in [-1.45, 1.45]:
-			_cyl(0.46, 0.32, Vector3(sx * 0.98, 0.46, sz), tire_mat, true)
+			_cyl(0.46, 0.34, Vector3(sx * 0.98, 0.46, sz), tire_mat, true)
 
 	# Bumpers front + rear
 	_box(Vector3(2.05, 0.3, 0.3), Vector3(0.0, 0.5, 2.25), body_mat)
@@ -79,6 +86,16 @@ func _box(size: Vector3, pos: Vector3, mat: Material) -> void:
 	mi.mesh = m
 	mi.material_override = mat
 	mi.position = pos
+	add_child(mi)
+
+func _tilt_box(size: Vector3, pos: Vector3, x_deg: float, mat: Material) -> void:
+	var mi := MeshInstance3D.new()
+	var m := BoxMesh.new()
+	m.size = size
+	mi.mesh = m
+	mi.material_override = mat
+	mi.position = pos
+	mi.rotation_degrees = Vector3(x_deg, 0.0, 0.0)
 	add_child(mi)
 
 func _cyl(radius: float, height: float, pos: Vector3, mat: Material, sideways := false) -> void:
