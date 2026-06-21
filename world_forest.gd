@@ -128,6 +128,7 @@ func _ready() -> void:
 	_scatter_grass()        # dense ground-cover so the floor never reads as flat
 	_scatter_trees()
 	_build_perimeter_walls()  # invisible barrier so you can't slip off the map edge
+	_build_mountains()        # a ring of peaks around the horizon
 	_scatter_decoration()   # primitive filler bushes
 	_scatter_props()        # real CC0 rocks / logs / ferns / branches
 	_build_cabin()          # start landmark (blocks its footprint cells)
@@ -512,6 +513,65 @@ func _wall(size: Vector3, pos: Vector3) -> void:
 	col.shape = sh
 	body.add_child(col)
 	add_child(body)
+
+## A ring of mountains around the horizon so the world feels bounded by terrain
+## (not a void) and you understand why you can't leave. Two bands — closer/smaller
+## and farther/taller — merged into ONE mesh (rock + snow surfaces) so the whole
+## range is ~2 draw calls. Snowy peaks catch the moonlight above the tree line.
+func _build_mountains() -> void:
+	var w := cols * cell_size
+	var center := Vector3(w * 0.5, 0.0, w * 0.5)
+	var edge := w * 0.5
+	var rock_st := SurfaceTool.new()
+	rock_st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var snow_st := SurfaceTool.new()
+	snow_st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var bands := [
+		{"n": 74, "rmin": edge - 4.0, "rmax": edge + 16.0, "hmin": 30.0, "hmax": 58.0, "bmin": 20.0, "bmax": 34.0},
+		{"n": 58, "rmin": edge + 26.0, "rmax": edge + 62.0, "hmin": 56.0, "hmax": 100.0, "bmin": 30.0, "bmax": 56.0},
+	]
+	for band in bands:
+		for i in band["n"]:
+			var ang := (float(i) / float(band["n"])) * TAU + _rng.randf_range(-0.05, 0.05)
+			var rad := _rng.randf_range(band["rmin"], band["rmax"])
+			var h := _rng.randf_range(band["hmin"], band["hmax"])
+			var br := _rng.randf_range(band["bmin"], band["bmax"])
+			var px := center.x + cos(ang) * rad
+			var pz := center.z + sin(ang) * rad
+			var yaw := _rng.randf_range(0.0, TAU)
+			var ybase := -10.0
+			var cone := CylinderMesh.new()
+			cone.top_radius = 0.0
+			cone.bottom_radius = br
+			cone.height = h
+			cone.radial_segments = _rng.randi_range(5, 7)
+			rock_st.append_from(cone, 0, Transform3D(Basis(Vector3.UP, yaw), Vector3(px, ybase + h * 0.5, pz)))
+			if h > 54.0:
+				var cap := CylinderMesh.new()
+				cap.top_radius = 0.0
+				cap.bottom_radius = br * 0.3
+				cap.height = h * 0.22
+				cap.radial_segments = cone.radial_segments
+				snow_st.append_from(cap, 0, Transform3D(Basis(Vector3.UP, yaw), Vector3(px, ybase + h - cap.height * 0.5, pz)))
+
+	var rock_mat := StandardMaterial3D.new()
+	rock_mat.albedo_color = Color(0.1, 0.11, 0.15)
+	rock_mat.roughness = 1.0
+	var snow_mat := StandardMaterial3D.new()
+	snow_mat.albedo_color = Color(0.58, 0.62, 0.72)
+	snow_mat.roughness = 0.9
+
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, rock_st.commit_to_arrays())
+	mesh.surface_set_material(0, rock_mat)
+	var snow_arrays := snow_st.commit_to_arrays()
+	if not (snow_arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).is_empty():
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, snow_arrays)
+		mesh.surface_set_material(1, snow_mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
 
 func _tree_collider(pos: Vector3) -> void:
 	var body := StaticBody3D.new()
