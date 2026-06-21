@@ -531,45 +531,42 @@ func _wall(size: Vector3, pos: Vector3) -> void:
 	body.add_child(col)
 	add_child(body)
 
-## A ring of mountains around the horizon so the world feels bounded by terrain
-## (not a void) and you understand why you can't leave. Two bands — closer/smaller
-## and farther/taller — merged into ONE mesh (rock + snow surfaces) so the whole
-## range is ~2 draw calls. Snowy peaks catch the moonlight above the tree line.
+## A square FRAME of mountains hugging just OUTSIDE the terrain edge — beyond the
+## perimeter wall, so you can never reach them — several rows deep and taller
+## further out. They overlap the edge so there's no void: look any direction off
+## the map and you see a wall of peaks. Merged into ONE mesh (~2 draw calls).
 func _build_mountains() -> void:
 	var w := cols * cell_size
-	var center := Vector3(w * 0.5, 0.0, w * 0.5)
-	var edge := w * 0.5
 	var rock_st := SurfaceTool.new()
 	rock_st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var snow_st := SurfaceTool.new()
 	snow_st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var bands := [
-		{"n": 74, "rmin": edge - 4.0, "rmax": edge + 16.0, "hmin": 30.0, "hmax": 58.0, "bmin": 20.0, "bmax": 34.0},
-		{"n": 58, "rmin": edge + 26.0, "rmax": edge + 62.0, "hmin": 56.0, "hmax": 100.0, "bmin": 30.0, "bmax": 56.0},
-	]
-	for band in bands:
-		for i in band["n"]:
-			var ang := (float(i) / float(band["n"])) * TAU + _rng.randf_range(-0.05, 0.05)
-			var rad := _rng.randf_range(band["rmin"], band["rmax"])
-			var h := _rng.randf_range(band["hmin"], band["hmax"])
-			var br := _rng.randf_range(band["bmin"], band["bmax"])
-			var px := center.x + cos(ang) * rad
-			var pz := center.z + sin(ang) * rad
-			var yaw := _rng.randf_range(0.0, TAU)
-			var ybase := -10.0
-			var cone := CylinderMesh.new()
-			cone.top_radius = 0.0
-			cone.bottom_radius = br
-			cone.height = h
-			cone.radial_segments = _rng.randi_range(5, 7)
-			rock_st.append_from(cone, 0, Transform3D(Basis(Vector3.UP, yaw), Vector3(px, ybase + h * 0.5, pz)))
-			if h > 54.0:
-				var cap := CylinderMesh.new()
-				cap.top_radius = 0.0
-				cap.bottom_radius = br * 0.3
-				cap.height = h * 0.22
-				cap.radial_segments = cone.radial_segments
-				snow_st.append_from(cap, 0, Transform3D(Basis(Vector3.UP, yaw), Vector3(px, ybase + h - cap.height * 0.5, pz)))
+	var along := 30          # peaks along each side
+	var depth_rows := 3      # rows marching outward (taller & further each row)
+	for side in 4:
+		for i in along:
+			# Overshoot the corners (-14 .. w+14) so adjacent sides overlap there.
+			var t := lerpf(-14.0, w + 14.0, (float(i) + _rng.randf_range(0.15, 0.85)) / float(along))
+			for row in depth_rows:
+				var depth := 6.0 + row * 26.0 + _rng.randf_range(0.0, 10.0)   # metres beyond the edge
+				var h := _rng.randf_range(34.0, 56.0) + row * 18.0
+				var br := _rng.randf_range(24.0, 40.0) + row * 7.0
+				var px := 0.0
+				var pz := 0.0
+				match side:
+					0:
+						px = t
+						pz = -depth          # south edge (z < 0)
+					1:
+						px = t
+						pz = w + depth       # north edge
+					2:
+						px = -depth          # west edge
+						pz = t
+					_:
+						px = w + depth       # east edge
+						pz = t
+				_append_mountain(rock_st, snow_st, px, pz, h, br)
 
 	var rock_mat := StandardMaterial3D.new()
 	rock_mat.albedo_color = Color(0.1, 0.11, 0.15)
@@ -589,6 +586,23 @@ func _build_mountains() -> void:
 	mi.mesh = mesh
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
+
+func _append_mountain(rock_st: SurfaceTool, snow_st: SurfaceTool, px: float, pz: float, h: float, br: float) -> void:
+	var yaw := _rng.randf_range(0.0, TAU)
+	var ybase := -18.0     # buried base so peaks rise cleanly with no floating gap
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = br
+	cone.height = h
+	cone.radial_segments = _rng.randi_range(5, 7)
+	rock_st.append_from(cone, 0, Transform3D(Basis(Vector3.UP, yaw), Vector3(px, ybase + h * 0.5, pz)))
+	if h > 52.0:
+		var cap := CylinderMesh.new()
+		cap.top_radius = 0.0
+		cap.bottom_radius = br * 0.3
+		cap.height = h * 0.22
+		cap.radial_segments = cone.radial_segments
+		snow_st.append_from(cap, 0, Transform3D(Basis(Vector3.UP, yaw), Vector3(px, ybase + h - cap.height * 0.5, pz)))
 
 func _tree_collider(pos: Vector3) -> void:
 	var body := StaticBody3D.new()
