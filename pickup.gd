@@ -4,6 +4,8 @@ extends Area3D
 
 signal collected
 
+const PartModels = preload("res://part_models.gd")
+
 @export var glow_color := Color(0.45, 1.0, 0.65)
 @export var spin_speed := 1.5
 @export var bob_height := 0.12
@@ -27,15 +29,39 @@ func _ready() -> void:
 	add_to_group("pickup" if counts_as_objective else "battery")
 	_base_y = position.y
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = glow_color
-	mat.emission_enabled = true
-	mat.emission = glow_color
-	mat.emission_energy_multiplier = 2.5
-	mesh.material_override = mat
-	light.light_color = glow_color
+	# Forest car-parts/batteries show the REAL item model with only a faint glow,
+	# so you have to actually search the woods. Backrooms orbs keep the bright orb.
+	var forest_item := must_carry or not counts_as_objective
+	if forest_item:
+		mesh.visible = false
+		var model: Node3D = PartModels.build(part_name if part_name != "" else "Battery")
+		model.scale = Vector3(1.7, 1.7, 1.7)
+		_faint_glow(model, glow_color)
+		add_child(model)
+		light.light_energy = 0.35
+		light.omni_range = 3.0
+		light.light_color = glow_color
+	else:
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = glow_color
+		mat.emission_enabled = true
+		mat.emission = glow_color
+		mat.emission_energy_multiplier = 2.5
+		mesh.material_override = mat
+		light.light_color = glow_color
 
 	body_entered.connect(_on_body_entered)
+
+## Give a model's materials a faint emission so it reads as a subtle hint in the
+## dark without being a beacon.
+func _faint_glow(n: Node, color: Color) -> void:
+	if n is MeshInstance3D and (n as MeshInstance3D).material_override is StandardMaterial3D:
+		var sm := (n as MeshInstance3D).material_override as StandardMaterial3D
+		sm.emission_enabled = true
+		sm.emission = color
+		sm.emission_energy_multiplier = 0.5
+	for c in n.get_children():
+		_faint_glow(c, color)
 
 func _process(delta: float) -> void:
 	_t += delta
